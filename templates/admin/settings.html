@@ -1,0 +1,918 @@
+{% extends "base.html" %}
+
+{% block title %}系统设置 - 客户管理系统{% endblock %}
+
+{% block page_title %}系统设置{% endblock %}
+
+{% block body %}
+<div class="page-content settings-page">
+  <!-- 简洁文本标签页 -->
+  <div class="customer-tabs-wrapper">
+    <div class="customer-tabs" id="settingsTabs" role="tablist">
+      <button class="customer-tab active" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane" type="button" role="tab" aria-controls="user-pane" aria-selected="true">
+        用户管理
+      </button>
+      <button class="customer-tab" id="region-tab" data-bs-toggle="tab" data-bs-target="#region-pane" type="button" role="tab" aria-controls="region-pane" aria-selected="false">
+        地区管理
+      </button>
+    </div>
+  </div>
+
+  <div class="tab-content" id="settingsTabContent">
+    <!-- 用户管理 Tab -->
+    <div class="tab-pane fade show active" id="user-pane" role="tabpanel" aria-labelledby="user-tab">
+      <div class="card">
+        <div class="card-body">
+          <!-- 用户筛选器 -->
+          <form method="get" class="user-filter-bar">
+            <div class="user-filter-group">
+              <label>角色</label>
+              <select name="role" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="">全部角色</option>
+                <option value="super_admin" {{ 'selected' if current_role_filter == 'super_admin' }}>超级管理员</option>
+                <option value="data_entry" {{ 'selected' if current_role_filter == 'data_entry' }}>数据员</option>
+                <option value="operator" {{ 'selected' if current_role_filter == 'operator' }}>运营</option>
+                <option value="sales" {{ 'selected' if current_role_filter == 'sales' }}>销售代表</option>
+              </select>
+            </div>
+            <div class="user-filter-group">
+              <label>地区</label>
+              <select name="region" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="">全部地区</option>
+                {% for r in regions %}
+                <option value="{{ r.name }}" {{ 'selected' if current_region_filter == r.name }}>
+                  {{ r.name }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="user-filter-group">
+              <label>账户状态</label>
+              <select name="status" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="">全部状态</option>
+                <option value="active" {{ 'selected' if current_status_filter == 'active' }}>启用</option>
+                <option value="inactive" {{ 'selected' if current_status_filter == 'inactive' }}>停用</option>
+              </select>
+            </div>
+            <div class="user-filter-actions">
+              <a href="{{ url_for('admin.settings') }}#user-tab" class="btn-action btn-sm">
+                重置
+              </a>
+            </div>
+          </form>
+
+          <!-- 桌面端表格视图 -->
+          <div class="data-table-wrapper d-none d-lg-block">
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>角色</th>
+                    <th>联系方式</th>
+                    <th>密码</th>
+                    <th>销售信息</th>
+                    <th>状态</th>
+                    <th>业绩</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for u in users %}
+                    {% set s = stats_map.get(u.id) %}
+                    {% set profile = u.sales_profile %}
+                    <tr data-user-id="{{ u.id }}">
+                      <td>
+                        <div class="user-name-cell">
+                          <strong>{{ u.username }}</strong>
+                          <small class="text-muted">ID: {{ u.id }}</small>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="role-badge role-{{ u.role }}">
+                          {% if u.role == 'super_admin' %}超级管理员
+                          {% elif u.role == 'data_entry' %}数据员
+                          {% elif u.role == 'operator' %}运营
+                          {% elif u.role == 'sales' %}销售代表
+                          {% else %}{{ u.role }}{% endif %}
+                        </span>
+                      </td>
+                      <td>
+                        <div class="contact-info">
+                          {% if u.phone %}
+                          <div><i class="bi-telephone"></i> {{ u.phone }}</div>
+                          {% endif %}
+                          {% if u.email %}
+                          <div><i class="bi-envelope"></i> {{ u.email }}</div>
+                          {% endif %}
+                          {% if not u.phone and not u.email %}
+                          <span class="text-muted">-</span>
+                          {% endif %}
+                        </div>
+                      </td>
+                      <td>
+                        <code class="password-display">
+                          {% if u.temp_password %}
+                            {{ u.temp_password }}
+                          {% elif u.username == 'superadmin' and u.role == 'super_admin' %}
+                            superadmin123
+                          {% else %}
+                            ******
+                          {% endif %}
+                        </code>
+                      </td>
+                      <td>
+                        {% if profile %}
+                        <div class="sales-info">
+                          <div><i class="bi-geo-alt"></i> {{ profile.service_region or '-' }}</div>
+                          <div><i class="bi-sort-numeric-down"></i> 序号: {{ profile.dispatch_order }}</div>
+                        </div>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                      </td>
+                      <td>
+                        <div class="status-group" style="display: flex; flex-direction: column; gap: 0.25rem;">
+                          <div style="display: flex; gap: 0.5rem;">
+                            {% if profile %}
+                            <span class="status-badge {{ 'accepted' if profile.is_available else 'timeout' }}" title="在线状态">
+                              {{ '可用' if profile.is_available else '不可用' }}
+                            </span>
+                            {% endif %}
+                            <span class="status-badge {{ 'accepted' if u.is_active else 'timeout' }}" title="账户状态">
+                              {{ '启用' if u.is_active else '停用' }}
+                            </span>
+                          </div>
+                          <form method="post" action="{{ url_for('admin.user_toggle_active', user_id=u.id) }}">
+                            <button type="submit" class="btn-action btn-sm {{ 'danger' if u.is_active else 'primary' }}" style="width: 100%; max-width: 80px;">
+                              {{ '停用' if u.is_active else '启用' }}
+                            </button>
+                          </form>
+                        </div>
+                      </td>
+                      <td>
+                        {% if u.role == 'sales' %}
+                        <div class="performance-stats">
+                          <div>接单: <strong>{{ s.accepted if s else 0 }}</strong></div>
+                          <div>转化: <strong>{{ s.converted if s else 0 }}</strong></div>
+                          <div>转化率: <strong>{{ s.rate if s else '-' }}</strong></div>
+                        </div>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                      </td>
+                      <td>
+                        <button class="btn-action btn-sm" onclick="editUser({{ u.id }})" title="编辑">
+                          <i class="bi-pencil"></i>
+                        </button>
+                      </td>
+                    </tr>
+                  {% else %}
+                    <tr>
+                      <td colspan="8" class="empty-state">
+                        <div class="empty-state-icon">📋</div>
+                        <p class="empty-state-text">暂无用户数据</p>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 移动端卡片视图 -->
+          <div class="user-cards d-lg-none">
+            {% for u in users %}
+              {% set s = stats_map.get(u.id) %}
+              {% set profile = u.sales_profile %}
+              <div class="user-card" data-user-id="{{ u.id }}" onclick="editUser({{ u.id }})">
+                <div class="user-card-header">
+                  <div class="user-card-title">
+                    <h4>{{ u.username }}</h4>
+                    <span class="user-id">ID: {{ u.id }}</span>
+                  </div>
+                  <span class="role-badge role-{{ u.role }}">
+                    {% if u.role == 'super_admin' %}超级管理员
+                    {% elif u.role == 'data_entry' %}数据员
+                    {% elif u.role == 'operator' %}运营
+                    {% elif u.role == 'sales' %}销售代表
+                    {% else %}{{ u.role }}{% endif %}
+                  </span>
+                </div>
+                <div class="user-card-body">
+                  <div class="user-info-row">
+                    <div class="info-item">
+                      <i class="bi-telephone"></i>
+                      <span>{{ u.phone or '未设置' }}</span>
+                    </div>
+                    <div class="info-item">
+                      <i class="bi-envelope"></i>
+                      <span>{{ u.email or '未设置' }}</span>
+                    </div>
+                  </div>
+                  {% if profile %}
+                  <div class="user-info-row">
+                    <div class="info-item">
+                      <i class="bi-geo-alt"></i>
+                      <span>{{ profile.service_region or '未设置' }}</span>
+                    </div>
+                    <div class="info-item">
+                      <i class="bi-sort-numeric-down"></i>
+                      <span>派单序号: {{ profile.dispatch_order }}</span>
+                    </div>
+                  </div>
+                  {% endif %}
+                  <div class="user-info-row">
+                    <div class="status-group" style="display: flex; flex-direction: column; gap: 0.25rem;">
+                      <div style="display: flex; gap: 0.5rem;">
+                        {% if profile %}
+                        <span class="status-badge {{ 'accepted' if profile.is_available else 'timeout' }}">
+                          {{ '可用' if profile.is_available else '不可用' }}
+                        </span>
+                        {% endif %}
+                        <span class="status-badge {{ 'accepted' if u.is_active else 'timeout' }}">
+                          {{ '启用' if u.is_active else '停用' }}
+                        </span>
+                      </div>
+                      <form method="post" action="{{ url_for('admin.user_toggle_active', user_id=u.id) }}">
+                        <button type="submit" class="btn-action btn-sm {{ 'danger' if u.is_active else 'primary' }}" style="width: 100%; max-width: 120px;">
+                          {{ '停用' if u.is_active else '启用' }}
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                  {% if u.role == 'sales' %}
+                  <div class="performance-section">
+                    <div class="performance-item">
+                      <span class="label">接单数</span>
+                      <span class="value">{{ s.accepted if s else 0 }}</span>
+                    </div>
+                    <div class="performance-item">
+                      <span class="label">转化数</span>
+                      <span class="value">{{ s.converted if s else 0 }}</span>
+                    </div>
+                    <div class="performance-item">
+                      <span class="label">转化率</span>
+                      <span class="value">{{ s.rate if s else '-' }}</span>
+                    </div>
+                  </div>
+                  {% endif %}
+                </div>
+                <div class="user-card-footer">
+                  <code class="password-display">
+                    {% if u.temp_password %}
+                      {{ u.temp_password }}
+                    {% elif u.username == 'superadmin' and u.role == 'super_admin' %}
+                      superadmin123
+                    {% else %}
+                      ******
+                    {% endif %}
+                  </code>
+                  <button class="btn-action btn-sm" onclick="event.stopPropagation(); editUser({{ u.id }})">
+                    <i class="bi-pencil"></i> 编辑
+                  </button>
+                </div>
+              </div>
+            {% else %}
+              <div class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <p class="empty-state-text">暂无用户数据</p>
+              </div>
+            {% endfor %}
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="action-buttons mt-3">
+            <button class="btn-action primary" onclick="showAddUserModal()">
+              <i class="bi-plus"></i> 添加
+            </button>
+            <button class="btn-action danger" onclick="deleteSelectedUser()">
+              <i class="bi-trash"></i> 删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 地区管理 Tab -->
+    <div class="tab-pane fade" id="region-pane" role="tabpanel" aria-labelledby="region-tab">
+      <div class="card">
+        <div class="card-body">
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>地区名称</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in regions %}
+                  <tr data-region-id="{{ r.id }}">
+                    <td>{{ r.id }}</td>
+                    <td>{{ r.name }}</td>
+                    <td>
+                      <span class="status-badge {{ 'accepted' if r.is_active else 'timeout' }}">
+                        {{ '启用' if r.is_active else '停用' }}
+                      </span>
+                    </td>
+                    <td>
+                      <button class="btn-action" onclick="editRegion({{ r.id }})" title="编辑">
+                        <i class="bi-pencil"></i> 编辑
+                      </button>
+                    </td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="4" class="empty-state">
+                      <div class="empty-state-icon">🌍</div>
+                      <p class="empty-state-text">暂无地区数据</p>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="action-buttons mt-3">
+            <button class="btn-action primary" onclick="showAddRegionModal()">
+              <i class="bi-plus"></i> 添加
+            </button>
+            <button class="btn-action danger" onclick="deleteSelectedRegion()">
+              <i class="bi-trash"></i> 删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 添加/编辑地区模态框 -->
+<div id="regionModal" class="modal" hidden>
+  <div class="modal-content">
+    <header>
+      <h3 id="regionModalTitle">添加地区</h3>
+      <button class="close" onclick="closeRegionModal()">&times;</button>
+    </header>
+    <form id="regionForm" method="post" class="modal-form">
+      <input type="hidden" name="region_id" id="regionId">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>地区名称</label>
+          <input type="text" name="name" id="regionName" class="form-control" required>
+        </div>
+        <div class="form-group checkbox">
+          <label>
+            <input type="checkbox" name="is_active" id="regionIsActive" checked> 启用地区
+          </label>
+        </div>
+      </div>
+      <footer>
+        <button type="button" class="btn-action" onclick="closeRegionModal()">取消</button>
+        <button type="submit" class="btn-action primary">保存</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<!-- 添加/编辑用户模态框 -->
+<div id="userModal" class="modal" hidden>
+  <div class="modal-content">
+    <header>
+      <h3 id="modalTitle">添加用户</h3>
+      <button class="close" onclick="closeUserModal()">&times;</button>
+    </header>
+    <form id="userForm" method="post" class="modal-form">
+      <input type="hidden" name="user_id" id="userId">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" name="username" id="username" class="form-control" required>
+        </div>
+        <div class="form-group">
+          <label>电话</label>
+          <input type="text" name="phone" id="phone" class="form-control" placeholder="可选">
+        </div>
+        <div class="form-group" id="emailGroup" style="display: none;">
+          <label>邮箱</label>
+          <input type="email" name="email" id="email" class="form-control" placeholder="用于接收派单通知（仅销售角色）">
+          <small style="color: #6b7280; font-size: 0.75rem;">仅销售角色有效，用于接收派单邮件通知</small>
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <div style="position: relative;">
+            <input type="password" name="password" id="password" class="form-control" required>
+            <button type="button" id="togglePassword" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #6b7280; font-size: 1.2rem;" title="显示/隐藏密码">
+              <i class="bi-eye" id="passwordIcon"></i>
+            </button>
+          </div>
+          <small style="color: #6b7280; font-size: 0.75rem;">编辑时留空则不修改密码</small>
+        </div>
+        <div class="form-group">
+          <label>角色</label>
+          <select name="role" id="role" class="form-control" required>
+            <option value="data_entry">数据员</option>
+            <option value="operator">运营</option>
+            <option value="sales">销售代表</option>
+            {% if current_user.role == 'super_admin' %}
+            <option value="super_admin">超级管理员</option>
+            {% endif %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>派单序号</label>
+          <input type="number" name="dispatch_order" id="dispatchOrder" class="form-control" value="0" min="0">
+          <small style="color: #6b7280; font-size: 0.75rem;">仅销售角色有效</small>
+        </div>
+        <div class="form-group">
+          <label>服务地区</label>
+          <select name="service_region" id="serviceRegion" class="form-control">
+            <option value="">请选择服务地区</option>
+            {% for r in regions %}
+              {% if r.is_active %}
+                <option value="{{ r.name }}">{{ r.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          <small style="color: #6b7280; font-size: 0.75rem;">仅销售角色有效，地区可在"地区管理"中自定义</small>
+        </div>
+        <div class="form-group checkbox">
+          <label>
+            <input type="checkbox" name="is_active" id="isActive" checked> 启用账户
+          </label>
+        </div>
+        <div class="form-group checkbox">
+          <label>
+            <input type="checkbox" name="is_available" id="isAvailable" checked> 可用状态（销售）
+          </label>
+          <small style="color: #6b7280; font-size: 0.75rem;">仅销售角色有效</small>
+        </div>
+      </div>
+      <footer>
+        <button type="button" class="btn-action" onclick="closeUserModal()">取消</button>
+        <button type="submit" class="btn-action primary">保存</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+let selectedUserId = null;
+
+// 密码显示/隐藏切换
+document.getElementById('togglePassword').addEventListener('click', function() {
+  const passwordInput = document.getElementById('password');
+  const passwordIcon = document.getElementById('passwordIcon');
+  if (passwordInput.type === 'password') {
+    passwordInput.type = 'text';
+    passwordIcon.classList.remove('bi-eye');
+    passwordIcon.classList.add('bi-eye-slash');
+  } else {
+    passwordInput.type = 'password';
+    passwordIcon.classList.remove('bi-eye-slash');
+    passwordIcon.classList.add('bi-eye');
+  }
+});
+
+// 表格行点击选择（桌面端）
+document.querySelectorAll('.data-table tbody tr[data-user-id]').forEach(row => {
+  row.addEventListener('click', function(e) {
+    if (e.target.tagName === 'BUTTON') return;
+    document.querySelectorAll('.data-table tbody tr').forEach(r => r.classList.remove('selected'));
+    this.classList.add('selected');
+    selectedUserId = parseInt(this.dataset.userId);
+  });
+});
+
+// 卡片点击选择（移动端）
+document.querySelectorAll('.user-card[data-user-id]').forEach(card => {
+  card.addEventListener('click', function(e) {
+    if (e.target.tagName === 'BUTTON') return;
+    document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+    this.classList.add('selected');
+    selectedUserId = parseInt(this.dataset.userId);
+  });
+});
+
+// 处理URL锚点，自动切换到对应的tab
+document.addEventListener('DOMContentLoaded', function() {
+  const hash = window.location.hash;
+  if (hash) {
+    const tabId = hash.replace('#', '');
+    const tabButton = document.getElementById(tabId);
+    if (tabButton && (tabButton.classList.contains('modern-tab') || tabButton.classList.contains('nav-link'))) {
+      const tab = new bootstrap.Tab(tabButton);
+      tab.show();
+    }
+  }
+});
+
+function showAddUserModal() {
+  document.getElementById('modalTitle').textContent = '添加用户';
+  document.getElementById('userForm').action = '{{ url_for("admin.user_create") }}';
+  document.getElementById('userForm').reset();
+  document.getElementById('userId').value = '';
+  document.getElementById('password').required = true;
+  document.getElementById('password').type = 'password';
+  document.getElementById('passwordIcon').classList.remove('bi-eye-slash');
+  document.getElementById('passwordIcon').classList.add('bi-eye');
+  // 设置默认密码：Welcome2025! (包含大小写字母、数字和特殊字符，好记)
+  document.getElementById('password').value = 'Welcome2025!';
+  document.getElementById('password').placeholder = '请输入初始密码';
+  document.getElementById('isActive').checked = true;
+  document.getElementById('isAvailable').checked = true;
+  document.getElementById('dispatchOrder').value = 0;
+  document.getElementById('serviceRegion').value = '';
+  document.getElementById('email').value = '';
+  // 默认隐藏邮箱字段
+  document.getElementById('emailGroup').style.display = 'none';
+  document.getElementById('userModal').hidden = false;
+}
+
+  // 当选择服务地区时，自动获取该地区的最大派单序号+1
+document.addEventListener('DOMContentLoaded', function() {
+  const serviceRegionSelect = document.getElementById('serviceRegion');
+  const dispatchOrderInput = document.getElementById('dispatchOrder');
+  const roleSelect = document.getElementById('role');
+  const emailGroup = document.getElementById('emailGroup');
+  
+  if (serviceRegionSelect && dispatchOrderInput && roleSelect && emailGroup) {
+    // 角色变化时显示/隐藏邮箱字段
+    roleSelect.addEventListener('change', function() {
+      if (this.value === 'sales') {
+        emailGroup.style.display = 'block';
+      } else {
+        emailGroup.style.display = 'none';
+      }
+    });
+    
+    serviceRegionSelect.addEventListener('change', async function() {
+      const regionName = this.value;
+      const role = roleSelect.value;
+      
+      // 只有销售角色且选择了地区时才自动填充
+      if (role === 'sales' && regionName) {
+        try {
+          const response = await fetch(`/admin/regions/${encodeURIComponent(regionName)}/max-dispatch-order`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+              dispatchOrderInput.value = data.next_order;
+            }
+          }
+        } catch (error) {
+          console.error('获取派单序号失败：', error);
+        }
+      } else if (!regionName) {
+        // 如果清空地区，重置为0
+        dispatchOrderInput.value = 0;
+      }
+    });
+    
+    // 当角色变化时，如果是销售角色且已选择地区，也自动填充
+    roleSelect.addEventListener('change', async function() {
+      const role = this.value;
+      const regionName = serviceRegionSelect.value;
+      
+      if (role === 'sales' && regionName) {
+        try {
+          const response = await fetch(`/admin/regions/${encodeURIComponent(regionName)}/max-dispatch-order`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+              dispatchOrderInput.value = data.next_order;
+            }
+          }
+        } catch (error) {
+          console.error('获取派单序号失败：', error);
+        }
+      }
+    });
+  }
+});
+
+function editUser(userId) {
+  selectedUserId = userId;
+  // 选中该行
+  document.querySelectorAll('.data-table tbody tr').forEach(r => r.classList.remove('selected'));
+  const row = document.querySelector(`tr[data-user-id="${userId}"]`);
+  if (row) {
+    row.classList.add('selected');
+  }
+  editSelectedUser();
+}
+
+async function editSelectedUser() {
+  if (!selectedUserId) {
+    alert('请先选择要编辑的用户');
+    return;
+  }
+  
+  try {
+    // 获取用户数据
+    const response = await fetch(`/admin/users/${selectedUserId}`);
+    if (!response.ok) {
+      throw new Error('获取用户数据失败');
+    }
+    const user = await response.json();
+    
+    // 填充表单
+    document.getElementById('modalTitle').textContent = '编辑用户';
+    document.getElementById('userForm').action = `/admin/users/${selectedUserId}/update`;
+    document.getElementById('userId').value = user.id;
+    document.getElementById('username').value = user.username;
+    document.getElementById('phone').value = user.phone || '';
+    document.getElementById('email').value = user.email || '';
+    document.getElementById('password').value = '';
+    document.getElementById('password').required = false;
+    document.getElementById('password').placeholder = '留空则不修改密码';
+    document.getElementById('role').value = user.role;
+    document.getElementById('isActive').checked = user.is_active;
+    // 销售相关字段 - 确保总是有值
+    document.getElementById('dispatchOrder').value = user.dispatch_order !== undefined ? user.dispatch_order : '0';
+    document.getElementById('isAvailable').checked = user.is_available === true;
+    document.getElementById('serviceRegion').value = user.service_region || '';
+    
+    // 根据角色显示/隐藏邮箱字段
+    const emailGroup = document.getElementById('emailGroup');
+    if (user.role === 'sales') {
+      emailGroup.style.display = 'block';
+    } else {
+      emailGroup.style.display = 'none';
+    }
+    
+    // 显示模态框
+    document.getElementById('userModal').hidden = false;
+  } catch (error) {
+    alert('获取用户数据失败：' + error.message);
+  }
+}
+
+function deleteSelectedUser() {
+  if (!selectedUserId) {
+    alert('请先选择要删除的用户');
+    return;
+  }
+  if (!confirm('确定要删除此用户吗？删除后无法恢复，相关数据将被清理。')) return;
+  
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `/admin/users/${selectedUserId}/delete`;
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function closeUserModal() {
+  document.getElementById('userModal').hidden = true;
+}
+
+// 点击模态框外部关闭
+document.getElementById('userModal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    closeUserModal();
+  }
+});
+
+// 表单提交处理（AJAX方式，以便显示密码）
+document.getElementById('userForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  
+  const form = this;
+  const formData = new FormData(form);
+  const action = form.action;
+  const isCreate = action.includes('/create');
+  
+  // 确保所有字段都被包含（即使值为空）
+  // 派单序号和服务地区
+  const dispatchOrder = document.getElementById('dispatchOrder').value || '0';
+  if (!formData.has('dispatch_order') || formData.get('dispatch_order') === '') {
+    formData.set('dispatch_order', dispatchOrder);
+  }
+  
+  const serviceRegion = document.getElementById('serviceRegion').value || '';
+  if (!formData.has('service_region')) {
+    formData.set('service_region', serviceRegion);
+  }
+  
+  // 复选框：如果选中，FormData 会自动包含；如果未选中，不包含（后端会正确处理）
+  // 但为了确保数据正确，我们显式处理
+  const isAvailable = document.getElementById('isAvailable').checked;
+  if (isAvailable && !formData.has('is_available')) {
+    formData.append('is_available', 'on');
+  }
+  
+  const isActive = document.getElementById('isActive').checked;
+  if (isActive && !formData.has('is_active')) {
+    formData.append('is_active', 'on');
+  }
+  
+  try {
+    const response = await fetch(action, {
+      method: 'POST',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: formData
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      
+      if (result.success) {
+        // 如果是创建用户或修改了密码，显示密码
+        if (result.password) {
+          alert(`操作成功！\n\n用户名：${result.username}\n密码：${result.password}\n\n请妥善保存此密码并发送给用户。`);
+        } else {
+          alert(result.message || '操作成功！');
+        }
+        
+        // 关闭模态框并刷新页面
+        closeUserModal();
+        window.location.reload();
+      } else {
+        alert(result.error || '操作失败');
+      }
+    } else {
+      const text = await response.text();
+      // 尝试解析为JSON
+      try {
+        const result = JSON.parse(text);
+        alert(result.error || '操作失败');
+      } catch {
+        // 如果不是JSON，可能是HTML重定向，直接刷新
+        window.location.reload();
+      }
+    }
+  } catch (error) {
+    alert('操作失败：' + error.message);
+  }
+});
+
+// ========== 地区管理相关函数 ==========
+let selectedRegionId = null;
+
+// 表格行点击选择
+document.querySelectorAll('.data-table tbody tr[data-region-id]').forEach(row => {
+  row.addEventListener('click', function(e) {
+    if (e.target.tagName === 'BUTTON') return;
+    document.querySelectorAll('.data-table tbody tr[data-region-id]').forEach(r => r.classList.remove('selected'));
+    this.classList.add('selected');
+    selectedRegionId = parseInt(this.dataset.regionId);
+  });
+});
+
+function showAddRegionModal() {
+  document.getElementById('regionModalTitle').textContent = '添加地区';
+  document.getElementById('regionForm').action = '{{ url_for("admin.region_create") }}';
+  document.getElementById('regionForm').reset();
+  document.getElementById('regionId').value = '';
+  document.getElementById('regionIsActive').checked = true;
+  document.getElementById('regionModal').hidden = false;
+}
+
+function editRegion(regionId) {
+  selectedRegionId = regionId;
+  // 选中该行
+  document.querySelectorAll('.data-table tbody tr[data-region-id]').forEach(r => r.classList.remove('selected'));
+  const row = document.querySelector(`tr[data-region-id="${regionId}"]`);
+  if (row) {
+    row.classList.add('selected');
+  }
+  editSelectedRegion();
+}
+
+async function editSelectedRegion() {
+  if (!selectedRegionId) {
+    alert('请先选择要编辑的地区');
+    return;
+  }
+  
+  try {
+    // 获取地区数据
+    const response = await fetch(`/admin/regions/${selectedRegionId}`);
+    if (!response.ok) {
+      throw new Error('获取地区数据失败');
+    }
+    const region = await response.json();
+    
+    // 填充表单
+    document.getElementById('regionModalTitle').textContent = '编辑地区';
+    document.getElementById('regionForm').action = `/admin/regions/${selectedRegionId}/update`;
+    document.getElementById('regionId').value = region.id;
+    document.getElementById('regionName').value = region.name;
+    document.getElementById('regionIsActive').checked = region.is_active;
+    
+    // 显示模态框
+    document.getElementById('regionModal').hidden = false;
+  } catch (error) {
+    alert('获取地区数据失败：' + error.message);
+  }
+}
+
+function deleteSelectedRegion() {
+  if (!selectedRegionId) {
+    alert('请先选择要删除的地区');
+    return;
+  }
+  if (!confirm('确定要删除此地区吗？')) return;
+  
+  // 使用 AJAX 方式删除，以便保持在地区管理标签页
+  fetch(`/admin/regions/${selectedRegionId}/delete`, {
+    method: 'POST',
+    headers: {
+      'X-Requested-With': 'XMLHttpRequest'
+    }
+  })
+  .then(response => {
+    if (response.ok) {
+      return response.json();
+    } else {
+      return response.text().then(text => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          throw new Error('删除失败');
+        }
+      });
+    }
+  })
+  .then(result => {
+    if (result.success) {
+      alert(result.message || '删除成功！');
+      // 保持在地区管理标签页并刷新
+      window.location.hash = '#region-tab';
+      window.location.reload();
+    } else {
+      alert(result.error || '删除失败');
+    }
+  })
+  .catch(error => {
+    alert('删除失败：' + error.message);
+  });
+}
+
+function closeRegionModal() {
+  document.getElementById('regionModal').hidden = true;
+}
+
+// 点击模态框外部关闭
+document.getElementById('regionModal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    closeRegionModal();
+  }
+});
+
+// 地区表单提交处理（AJAX方式）
+document.getElementById('regionForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  
+  const form = this;
+  const formData = new FormData(form);
+  const action = form.action;
+  
+  try {
+    const response = await fetch(action, {
+      method: 'POST',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: formData
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      
+      if (result.success) {
+        alert(result.message || '操作成功！');
+        // 关闭模态框并刷新页面，保持在地区管理标签页
+        closeRegionModal();
+        // 设置锚点并刷新页面
+        window.location.hash = '#region-tab';
+        window.location.reload();
+      } else {
+        alert(result.error || '操作失败');
+      }
+    } else {
+      const text = await response.text();
+      // 尝试解析为JSON
+      try {
+        const result = JSON.parse(text);
+        alert(result.error || '操作失败');
+      } catch {
+        // 如果不是JSON，可能是HTML重定向，保持在地区管理标签页
+        window.location.hash = '#region-tab';
+        window.location.reload();
+      }
+    }
+  } catch (error) {
+    alert('操作失败：' + error.message);
+  }
+});
+</script>
+{% endblock %}
+

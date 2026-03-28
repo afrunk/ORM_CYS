@@ -1,0 +1,1537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>客户智能分配管理系统</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <style>
+    :root {
+      --primary: #0047AB;
+      --primary-dark: #003380;
+      --primary-light: #e8f0fb;
+      --accent: #0070e0;
+      --text-dark: #1a1a2e;
+      --text-body: #3d3d5c;
+      --text-muted: #6b7280;
+      --bg-white: #ffffff;
+      --bg-gray: #f7f9fc;
+      --border: #e2e8f0;
+      --shadow-sm: 0 2px 8px rgba(0, 71, 171, 0.08);
+      --shadow-md: 0 8px 32px rgba(0, 71, 171, 0.12);
+      --shadow-hover: 0 16px 48px rgba(0, 71, 171, 0.18);
+      --radius: 12px;
+      --max-w: 1200px;
+    }
+
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      font-size: 16px;
+    }
+
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: var(--text-body);
+      background: var(--bg-white);
+      line-height: 1.8;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      transition: box-shadow 0.3s;
+    }
+    nav.scrolled {
+      box-shadow: 0 2px 20px rgba(0, 71, 171, 0.08);
+    }
+    .nav-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-brand {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--primary);
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .nav-brand i {
+      font-size: 1.2rem;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      list-style: none;
+    }
+    .nav-links a {
+      text-decoration: none;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover {
+      color: var(--primary);
+    }
+    .nav-cta {
+      background: var(--primary);
+      color: #fff !important;
+      padding: 8px 20px;
+      border-radius: 6px;
+      font-weight: 600;
+      transition: background 0.2s, transform 0.15s !important;
+    }
+    .nav-cta:hover {
+      background: var(--primary-dark) !important;
+      color: #fff !important;
+      transform: translateY(-1px);
+    }
+    .hamburger {
+      display: none;
+      background: none;
+      border: none;
+      font-size: 1.4rem;
+      color: var(--primary);
+      cursor: pointer;
+      padding: 4px;
+    }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 120px 24px 80px;
+      background: linear-gradient(165deg, #f0f5ff 0%, #ffffff 40%, #f0f5ff 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      top: -200px;
+      right: -200px;
+      width: 700px;
+      height: 700px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0, 71, 171, 0.06) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      bottom: -150px;
+      left: -150px;
+      width: 500px;
+      height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0, 71, 171, 0.04) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-inner {
+      max-width: 800px;
+      position: relative;
+      z-index: 1;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--primary-light);
+      color: var(--primary);
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 100px;
+      margin-bottom: 32px;
+      letter-spacing: 0.5px;
+      border: 1px solid rgba(0, 71, 171, 0.12);
+    }
+    .hero-badge i {
+      font-size: 0.75rem;
+    }
+    .hero h1 {
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      font-weight: 800;
+      color: var(--text-dark);
+      line-height: 1.2;
+      margin-bottom: 20px;
+      letter-spacing: -0.5px;
+    }
+    .hero h1 span {
+      color: var(--primary);
+    }
+    .hero-sub {
+      font-size: clamp(1rem, 2vw, 1.2rem);
+      color: var(--text-muted);
+      margin-bottom: 48px;
+      line-height: 1.9;
+      font-weight: 400;
+    }
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--primary);
+      color: #fff;
+      padding: 14px 36px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 1rem;
+      border: none;
+      cursor: pointer;
+      transition: background 0.25s, transform 0.2s, box-shadow 0.25s;
+      box-shadow: 0 4px 16px rgba(0, 71, 171, 0.3);
+    }
+    .btn-primary:hover {
+      background: var(--primary-dark);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(0, 71, 171, 0.4);
+    }
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: transparent;
+      color: var(--primary);
+      padding: 13px 32px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 1rem;
+      border: 2px solid rgba(0, 71, 171, 0.25);
+      cursor: pointer;
+      transition: border-color 0.25s, background 0.25s, transform 0.2s;
+    }
+    .btn-secondary:hover {
+      border-color: var(--primary);
+      background: var(--primary-light);
+      transform: translateY(-1px);
+    }
+    .hero-stats {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 48px;
+      margin-top: 64px;
+      padding-top: 48px;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .hero-stat {
+      text-align: center;
+    }
+    .hero-stat-num {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--primary);
+      line-height: 1;
+      display: block;
+    }
+    .hero-stat-label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+      display: block;
+      font-weight: 500;
+    }
+
+    /* ── SECTION COMMON ── */
+    section {
+      padding: 96px 24px;
+    }
+    .section-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+    }
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--primary);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .section-label::before,
+    .section-label::after {
+      content: "";
+      display: block;
+      width: 24px;
+      height: 2px;
+      background: var(--primary);
+      border-radius: 2px;
+      opacity: 0.5;
+    }
+    .section-title {
+      font-size: clamp(1.6rem, 3.5vw, 2.4rem);
+      font-weight: 800;
+      color: var(--text-dark);
+      line-height: 1.3;
+      margin-bottom: 16px;
+      letter-spacing: -0.3px;
+    }
+    .section-desc {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      max-width: 600px;
+      line-height: 1.9;
+      margin-bottom: 56px;
+    }
+
+    /* ── FEATURES ── */
+    .features {
+      background: var(--bg-gray);
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: var(--bg-white);
+      border-radius: var(--radius);
+      padding: 36px 32px;
+      border: 1px solid var(--border);
+      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+                  box-shadow 0.3s,
+                  border-color 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+    .feature-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .feature-card:hover {
+      transform: translateY(-6px);
+      box-shadow: var(--shadow-hover);
+      border-color: rgba(0, 71, 171, 0.15);
+    }
+    .feature-card:hover::before {
+      opacity: 1;
+    }
+    .feature-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      background: var(--primary-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      transition: background 0.3s;
+    }
+    .feature-icon i {
+      font-size: 1.3rem;
+      color: var(--primary);
+    }
+    .feature-card:hover .feature-icon {
+      background: rgba(0, 71, 171, 0.12);
+    }
+    .feature-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 10px;
+      line-height: 1.4;
+    }
+    .feature-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.85;
+    }
+    .feature-tag {
+      display: inline-block;
+      margin-top: 16px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--primary);
+      background: var(--primary-light);
+      padding: 3px 10px;
+      border-radius: 100px;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── ADVANTAGES ── */
+    .advantages {
+      background: var(--bg-white);
+    }
+    .advantages-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 32px;
+    }
+    .advantage-item {
+      padding: 40px 32px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, #f8faff 0%, #ffffff 100%);
+      transition: border-color 0.3s, box-shadow 0.3s;
+      position: relative;
+    }
+    .advantage-item:hover {
+      border-color: rgba(0, 71, 171, 0.2);
+      box-shadow: var(--shadow-md);
+    }
+    .advantage-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      background: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 16px rgba(0, 71, 171, 0.25);
+    }
+    .advantage-icon i {
+      font-size: 1.1rem;
+      color: #fff;
+    }
+    .advantage-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .advantage-desc {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.9;
+    }
+    .advantage-highlight {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .advantage-highlight i {
+      color: var(--primary);
+      font-size: 0.85rem;
+    }
+    .advantage-highlight span {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--primary);
+    }
+
+    /* ── SECURITY ── */
+    .security {
+      background: var(--bg-gray);
+    }
+    .security-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .security-card {
+      background: var(--bg-white);
+      border-radius: var(--radius);
+      padding: 32px 28px;
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+      transition: box-shadow 0.3s, transform 0.25s;
+    }
+    .security-card:hover {
+      box-shadow: var(--shadow-md);
+      transform: translateY(-3px);
+    }
+    .security-icon {
+      flex-shrink: 0;
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: rgba(0, 71, 171, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .security-icon i {
+      font-size: 1rem;
+      color: var(--primary);
+    }
+    .security-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 6px;
+    }
+    .security-desc {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+
+    /* ── PROCESS / FLOW ── */
+    .process {
+      background: var(--bg-white);
+    }
+    .process-flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      flex-wrap: wrap;
+      position: relative;
+    }
+    .process-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      position: relative;
+      flex: 1;
+      min-width: 140px;
+      max-width: 200px;
+      padding: 0 16px;
+    }
+    .process-step-num {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      font-size: 0.9rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(0, 71, 171, 0.3);
+      flex-shrink: 0;
+    }
+    .process-step-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 6px;
+    }
+    .process-step-desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+    .process-arrow {
+      font-size: 1.2rem;
+      color: var(--primary);
+      opacity: 0.35;
+      flex-shrink: 0;
+      margin-bottom: 20px;
+    }
+
+    /* ── CTA ── */
+    .cta {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      text-align: center;
+      padding: 96px 24px;
+      position: relative;
+      overflow: hidden;
+    }
+    .cta::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.04'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+      pointer-events: none;
+    }
+    .cta-inner {
+      position: relative;
+      z-index: 1;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .cta h2 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 16px;
+      line-height: 1.3;
+    }
+    .cta p {
+      font-size: 1rem;
+      color: rgba(255, 255, 255, 0.75);
+      margin-bottom: 40px;
+      line-height: 1.8;
+    }
+    .btn-white {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff;
+      color: var(--primary);
+      padding: 14px 40px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 1rem;
+      border: none;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+    .btn-white:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      background: #0f1f3d;
+      color: rgba(255, 255, 255, 0.5);
+      text-align: center;
+      padding: 40px 24px;
+      font-size: 0.82rem;
+      line-height: 1.8;
+    }
+    footer p {
+      letter-spacing: 0.3px;
+    }
+    footer .footer-divider {
+      width: 40px;
+      height: 2px;
+      background: rgba(0, 71, 171, 0.6);
+      margin: 16px auto;
+      border-radius: 2px;
+    }
+
+    /* ── ANIMATIONS ── */
+    .fade-up {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .fade-up.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ── PRICING ── */
+    .pricing {
+      background: var(--bg-white);
+    }
+
+    /* 主价格卡片 */
+    .pricing-main {
+      background: linear-gradient(135deg, #f0f5ff 0%, #e8f0fb 100%);
+      border: 1px solid rgba(0, 71, 171, 0.15);
+      border-radius: 20px;
+      padding: 52px 48px 44px;
+      text-align: center;
+      max-width: 640px;
+      margin: 0 auto 56px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0, 71, 171, 0.1);
+    }
+    .pricing-main::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+    }
+    .pricing-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 100px;
+      margin-bottom: 28px;
+      letter-spacing: 0.5px;
+    }
+    .pricing-amount {
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+    .pricing-currency {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--primary);
+      align-self: flex-start;
+      margin-top: 8px;
+    }
+    .pricing-num {
+      font-size: 4.5rem;
+      font-weight: 900;
+      color: var(--text-dark);
+      line-height: 1;
+      letter-spacing: -2px;
+    }
+    .pricing-unit {
+      font-size: 1rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      align-self: flex-end;
+      margin-bottom: 6px;
+    }
+    .pricing-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-bottom: 36px;
+    }
+    .pricing-includes {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      text-align: left;
+      max-width: 380px;
+      margin: 0 auto;
+    }
+    .pricing-include-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+      color: var(--text-body);
+    }
+    .pricing-include-item i {
+      color: var(--primary);
+      font-size: 0.85rem;
+      flex-shrink: 0;
+    }
+
+    /* 三列明细卡片 */
+    .pricing-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    .pricing-detail-card {
+      background: var(--bg-gray);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px 28px;
+      transition: box-shadow 0.3s, transform 0.25s;
+    }
+    .pricing-detail-card:hover {
+      box-shadow: var(--shadow-md);
+      transform: translateY(-3px);
+    }
+    .pricing-detail-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--primary-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .pricing-detail-icon i {
+      font-size: 1rem;
+      color: var(--primary);
+    }
+    .pricing-detail-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 10px;
+    }
+    .pricing-detail-body {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.85;
+      margin-bottom: 16px;
+    }
+    .pricing-tip {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      background: rgba(0, 71, 171, 0.05);
+      border-radius: 8px;
+      padding: 10px 12px;
+      border-left: 3px solid rgba(0, 71, 171, 0.2);
+    }
+    .pricing-tip i {
+      color: var(--primary);
+      font-size: 0.8rem;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .pricing-tip span {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+    .pricing-tip strong {
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    /* ── PURCHASE GUIDE ── */
+    .guide {
+      background: var(--bg-gray);
+    }
+    .guide-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      margin-bottom: 32px;
+    }
+    .guide-block {
+      background: var(--bg-white);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 36px 32px;
+      transition: box-shadow 0.3s;
+    }
+    .guide-block:hover {
+      box-shadow: var(--shadow-md);
+    }
+    .guide-block-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .guide-block-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      background: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 4px 14px rgba(0, 71, 171, 0.25);
+    }
+    .guide-block-icon i {
+      font-size: 0.95rem;
+      color: #fff;
+    }
+    .guide-block-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+    .guide-block-body {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .guide-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+    .guide-item-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--primary-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .guide-item-icon i {
+      font-size: 0.85rem;
+      color: var(--primary);
+    }
+    .guide-item-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--text-dark);
+      margin-bottom: 4px;
+    }
+    .guide-item-desc {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+    /* 安全提示卡片 */
+    .guide-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: rgba(0, 71, 171, 0.04);
+      border: 1px solid rgba(0, 71, 171, 0.12);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .guide-note > i {
+      color: var(--primary);
+      font-size: 0.95rem;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .guide-note-title {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 5px;
+    }
+    .guide-note-body {
+      font-size: 0.83rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+    .guide-note-body strong {
+      color: var(--text-body);
+    }
+    /* 底部提醒条 */
+    .guide-footer-note {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: linear-gradient(90deg, rgba(0, 71, 171, 0.06), rgba(0, 71, 171, 0.03));
+      border: 1px solid rgba(0, 71, 171, 0.1);
+      border-radius: 10px;
+      padding: 16px 24px;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+    .guide-footer-note i {
+      color: var(--primary);
+      font-size: 1rem;
+      flex-shrink: 0;
+    }
+    .guide-footer-note span {
+      flex: 1;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 1024px) {
+      .advantages-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+        position: absolute;
+        top: 64px;
+        left: 0;
+        right: 0;
+        background: #fff;
+        flex-direction: column;
+        padding: 16px 24px 24px;
+        border-bottom: 1px solid var(--border);
+        gap: 16px;
+        box-shadow: 0 8px 24px rgba(0, 71, 171, 0.1);
+      }
+      .nav-links.open {
+        display: flex;
+      }
+      .hamburger {
+        display: block;
+      }
+      .advantages-grid {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+      .process-arrow {
+        display: none;
+      }
+      .process-flow {
+        gap: 32px;
+      }
+      .hero-stats {
+        gap: 24px;
+      }
+      section {
+        padding: 64px 20px;
+      }
+      .cta {
+        padding: 64px 20px;
+      }
+      .pricing-detail-grid {
+        grid-template-columns: 1fr;
+      }
+      .guide-grid {
+        grid-template-columns: 1fr;
+      }
+      .pricing-main {
+        padding: 36px 24px 32px;
+      }
+    }
+    @media (max-width: 480px) {
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+      .security-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Smooth mobile nav overlay */
+    .nav-links.open + .hamburger-overlay {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav id="navbar">
+    <div class="nav-inner">
+      <div class="nav-brand">
+        <i class="fa-solid fa-chart-pie"></i>
+        客户智能分配管理系统
+      </div>
+      <ul class="nav-links" id="navLinks">
+        <li><a href="#features">核心功能</a></li>
+        <li><a href="#advantages">核心优势</a></li>
+        <li><a href="#security">安全保障</a></li>
+        <li><a href="#process">运作流程</a></li>
+        <li><a href="#pricing">费用详情</a></li>
+        <li><a href="#guide">购买须知</a></li>
+        <li><a href="#contact" class="nav-cta">申请演示</a></li>
+      </ul>
+      <button class="hamburger" id="hamburger" aria-label="菜单">
+        <i class="fa-solid fa-bars"></i>
+      </button>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero" id="hero">
+    <div class="hero-inner">
+      <div class="hero-badge">
+        <i class="fa-solid fa-shield-halved"></i>
+        私有化部署 · 数据自主可控
+      </div>
+      <h1>让每一条客户线索<br><span>都能得到及时响应</span></h1>
+      <p class="hero-sub">
+        智能地域派单 · 超时自动重派 · 公海资源激活 · 多维数据洞察<br>
+        一套系统，实现从线索录入到业务转化的全链路闭环管理
+      </p>
+      <div class="hero-actions">
+        <a href="#contact" class="btn-primary">
+          <i class="fa-solid fa-calendar-check"></i>
+          申请演示
+        </a>
+        <a href="#features" class="btn-secondary">
+          <i class="fa-solid fa-arrow-down"></i>
+          了解更多
+        </a>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <span class="hero-stat-num">7×24h</span>
+          <span class="hero-stat-label">全天候自动运行</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-num">100%</span>
+          <span class="hero-stat-label">数据本地存储</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-num">零</span>
+          <span class="hero-stat-label">外部数据中转</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-num">全程</span>
+          <span class="hero-stat-label">操作可追溯</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="features" id="features">
+    <div class="section-inner">
+      <div class="section-label">核心功能</div>
+      <h2 class="section-title">五大核心能力，覆盖客户管理全流程</h2>
+      <p class="section-desc">
+        从线索录入、精准分配、跟进管理到数据复盘，每一个环节均实现自动化与智能化，替代低效的人工操作，大幅提升团队协同效率与客户响应速度。
+      </p>
+      <div class="features-grid">
+        <div class="feature-card fade-up">
+          <div class="feature-icon">
+            <i class="fa-solid fa-map-location-dot"></i>
+          </div>
+          <h3 class="feature-title">智能地域派单</h3>
+          <p class="feature-desc">系统根据客户所在地域自动匹配对应区域的服务销售，全程无需人工干预，彻底告别经验判断与逐个查找的旧模式。</p>
+          <span class="feature-tag">自动匹配 · 免人工介入</span>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </div>
+          <h3 class="feature-title">超时自动重派</h3>
+          <p class="feature-desc">派发后规定时间内未被认领的客户，系统自动在同区域内转派下一位可用销售，确保每条商机不被遗漏、不因响应迟滞而流失。</p>
+          <span class="feature-tag">商机零流失 · 全自动流转</span>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">
+            <i class="fa-solid fa-layer-group"></i>
+          </div>
+          <h3 class="feature-title">公海资源池</h3>
+          <p class="feature-desc">连续多次未能成功派发的客户自动汇入公海，对所有符合条件的销售开放自主认领，有效激活沉淀客户，实现资源的二次分配。</p>
+          <span class="feature-tag">激活沉淀 · 二次分配</span>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">
+            <i class="fa-solid fa-chart-mixed"></i>
+          </div>
+          <h3 class="feature-title">多维数据看板</h3>
+          <p class="feature-desc">覆盖录入量、接单量、转化率、超时率、地域分布等全链路数据，支持按班次、日、周、月多口径查询，为决策提供实时、真实的数据支撑。</p>
+          <span class="feature-tag">数据驱动 · 科学决策</span>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">
+            <i class="fa-solid fa-clipboard-list"></i>
+          </div>
+          <h3 class="feature-title">全链路操作留痕</h3>
+          <p class="feature-desc">录入、派发、接单、跟进、转化、公海释放等每个业务环节均保留完整日志与时间戳，支持随时回溯，降低管理风险。</p>
+          <span class="feature-tag">有迹可循 · 有据可查</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ADVANTAGES -->
+  <section class="advantages" id="advantages">
+    <div class="section-inner">
+      <div class="section-label">核心优势</div>
+      <h2 class="section-title">为什么选择私有化部署方案</h2>
+      <p class="section-desc">
+        与SaaS云端订阅模式不同，私有化部署将系统的全部运行权与数据控制权完整交还客户，满足各级组织对数据自主可控的合规要求。
+      </p>
+      <div class="advantages-grid">
+        <div class="advantage-item fade-up">
+          <div class="advantage-icon">
+            <i class="fa-solid fa-database"></i>
+          </div>
+          <h3 class="advantage-title">数据主权完全归属客户</h3>
+          <p class="advantage-desc">
+            所有业务数据存储于客户自行采购、自行管控的服务器中，不依赖任何第三方云平台或外部数据中转站，从根本上排除数据被第三方平台访问或挪用的可能性。
+          </p>
+          <div class="advantage-highlight">
+            <i class="fa-solid fa-check-circle"></i>
+            <span>数据所有权100%归客户所有</span>
+          </div>
+        </div>
+        <div class="advantage-item fade-up">
+          <div class="advantage-icon">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <h3 class="advantage-title">物理隔离，外网风险根本隔绝</h3>
+          <p class="advantage-desc">
+            系统部署于客户内部网络或自有数据中心后，运行环境与外部互联网在物理层面相互独立，外部攻击者无法通过公共信道直接触达系统核心数据。
+          </p>
+          <div class="advantage-highlight">
+            <i class="fa-solid fa-check-circle"></i>
+            <span>物理隔离保障最高安全边界</span>
+          </div>
+        </div>
+        <div class="advantage-item fade-up">
+          <div class="advantage-icon">
+            <i class="fa-solid fa-sliders"></i>
+          </div>
+          <h3 class="advantage-title">按需深度定制</h3>
+          <p class="advantage-desc">
+            系统架构支持根据组织规模、地域分布与业务流程灵活配置与功能定制，无需削足适履地适应标准化产品，可快速适配现有业务流程并产生实际效益。
+          </p>
+          <div class="advantage-highlight">
+            <i class="fa-solid fa-check-circle"></i>
+            <span>贴合实际业务流程</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECURITY -->
+  <section class="security" id="security">
+    <div class="section-inner">
+      <div class="section-label">安全保障</div>
+      <h2 class="section-title">三层安全体系，守护业务数据</h2>
+      <p class="section-desc">
+        从账户权限管控到会话安全校验再到本地化存储策略，构建覆盖身份认证、访问控制与数据保管全生命周期的安全闭环。
+      </p>
+      <div class="security-grid">
+        <div class="security-card fade-up">
+          <div class="security-icon">
+            <i class="fa-solid fa-user-shield"></i>
+          </div>
+          <div>
+            <h3 class="security-title">账户分级授权</h3>
+            <p class="security-desc">多层级角色权限体系，管理员、数据员、运营、销售各司其职，敏感信息仅对授权人员可见，杜绝越权访问。</p>
+          </div>
+        </div>
+        <div class="security-card fade-up">
+          <div class="security-icon">
+            <i class="fa-solid fa-user-lock"></i>
+          </div>
+          <div>
+            <h3 class="security-title">会话安全管控</h3>
+            <p class="security-desc">会话有效期控制与实时身份校验机制，退出登录后会话自动失效，防止因凭证泄露导致的账号冒用风险。</p>
+          </div>
+        </div>
+        <div class="security-card fade-up">
+          <div class="security-icon">
+            <i class="fa-solid fa-server"></i>
+          </div>
+          <div>
+            <h3 class="security-title">本地化存储</h3>
+            <p class="security-desc">支持主流关系型数据库本地部署，数据在创建、传输、存储全生命周期内始终处于客户自身技术管控范围。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROCESS -->
+  <section class="process" id="process">
+    <div class="section-inner">
+      <div class="section-label">运作流程</div>
+      <h2 class="section-title">五步闭环，实现客户资源全生命周期管理</h2>
+      <p class="section-desc">
+        从线索录入到最终转化，系统提供全链路自动化支撑，让管理更高效、让决策有依据。
+      </p>
+      <div class="process-flow">
+        <div class="process-step fade-up">
+          <div class="process-step-num">1</div>
+          <div class="process-step-title">线索录入</div>
+          <div class="process-step-desc">运营人员录入客户信息，系统自动完成数据校验与标准化</div>
+        </div>
+        <div class="process-arrow"><i class="fa-solid fa-chevron-right"></i></div>
+        <div class="process-step fade-up">
+          <div class="process-step-num">2</div>
+          <div class="process-step-title">智能派单</div>
+          <div class="process-step-desc">系统根据地域自动匹配并派发给对应销售，全程无需人工介入</div>
+        </div>
+        <div class="process-arrow"><i class="fa-solid fa-chevron-right"></i></div>
+        <div class="process-step fade-up">
+          <div class="process-step-num">3</div>
+          <div class="process-step-title">自动重派</div>
+          <div class="process-step-desc">超时未接单自动转派同区域下一位可用销售，确保商机持续跟进</div>
+        </div>
+        <div class="process-arrow"><i class="fa-solid fa-chevron-right"></i></div>
+        <div class="process-step fade-up">
+          <div class="process-step-num">4</div>
+          <div class="process-step-title">销售跟进</div>
+          <div class="process-step-desc">销售在线接单并提交跟进结果，系统同步记录转化与有效性标注</div>
+        </div>
+        <div class="process-arrow"><i class="fa-solid fa-chevron-right"></i></div>
+        <div class="process-step fade-up">
+          <div class="process-step-num">5</div>
+          <div class="process-step-title">数据复盘</div>
+          <div class="process-step-desc">多维看板实时呈现全链路数据，辅助管理层进行业务复盘与策略优化</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section class="pricing" id="pricing">
+    <div class="section-inner">
+      <div class="section-label">费用详情</div>
+      <h2 class="section-title">费用详情与服务支持</h2>
+      <p class="section-desc">
+        透明定价，无隐形费用。我们相信清晰的报价是建立长期信任的基础。
+      </p>
+
+      <!-- 主价格卡片 -->
+      <div class="pricing-main fade-up">
+        <div class="pricing-badge">
+          <i class="fa-solid fa-star"></i>
+          标准授权
+        </div>
+        <div class="pricing-amount">
+          <span class="pricing-currency">¥</span>
+          <span class="pricing-num">2,588</span>
+          <span class="pricing-unit">元 / 套</span>
+        </div>
+        <div class="pricing-desc">
+          含首年授权使用、系统部署及基础售后支持
+        </div>
+
+        <!-- 服务清单 -->
+        <div class="pricing-includes">
+          <div class="pricing-include-item">
+            <i class="fa-solid fa-check"></i>
+            <span>一次性授权，永久使用</span>
+          </div>
+          <div class="pricing-include-item">
+            <i class="fa-solid fa-check"></i>
+            <span>含一年免费售后支持，系统运行问题随时响应</span>
+          </div>
+          <div class="pricing-include-item">
+            <i class="fa-solid fa-check"></i>
+            <span>技术人员远程部署，协助完成服务器选购</span>
+          </div>
+          <div class="pricing-include-item">
+            <i class="fa-solid fa-check"></i>
+            <span>可按需提供定制化功能扩展</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 下方三列说明 -->
+      <div class="pricing-detail-grid">
+        <div class="pricing-detail-card fade-up">
+          <div class="pricing-detail-icon">
+            <i class="fa-solid fa-server"></i>
+          </div>
+          <h3 class="pricing-detail-title">服务器说明</h3>
+          <p class="pricing-detail-body">
+            本报价不含服务器成本。系统支持部署于客户自购云服务器，技术人员将协助您完成服务器选购。
+          </p>
+          <div class="pricing-tip">
+            <i class="fa-solid fa-circle-info"></i>
+            <span>云服务器首年参考价约 <strong>99元</strong>，次年起按供应商官网标准续费</span>
+          </div>
+        </div>
+
+        <div class="pricing-detail-card fade-up">
+          <div class="pricing-detail-icon">
+            <i class="fa-solid fa-wrench"></i>
+          </div>
+          <h3 class="pricing-detail-title">增值服务</h3>
+          <p class="pricing-detail-body">
+            支持各类定制化功能扩展，如需服务器迁移或增加新功能，仅收取极低的基础维护费用。
+          </p>
+          <div class="pricing-tip">
+            <i class="fa-solid fa-circle-info"></i>
+            <span>定制化需求按实际工作量评估，报价透明，先确认后实施</span>
+          </div>
+        </div>
+
+        <div class="pricing-detail-card fade-up">
+          <div class="pricing-detail-icon">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <h3 class="pricing-detail-title">售后保障</h3>
+          <p class="pricing-detail-body">
+            购买后第一年内，针对系统运行问题提供免费技术支持，专人对接，响应及时。
+          </p>
+          <div class="pricing-tip">
+            <i class="fa-solid fa-circle-info"></i>
+            <span>一年后如需续签维护服务，可自主选择，费用极低</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PURCHASE GUIDE -->
+  <section class="guide" id="guide">
+    <div class="section-inner">
+      <div class="section-label">购买须知</div>
+      <h2 class="section-title">购买须知与交付说明</h2>
+      <p class="section-desc">
+        我们将全程提供专业支持，确保系统快速上线、平滑交付。以下为购买前的重要说明，请仔细阅读。
+      </p>
+
+      <div class="guide-grid">
+        <!-- 左列：交付服务 -->
+        <div class="guide-block fade-up">
+          <div class="guide-block-header">
+            <div class="guide-block-icon">
+              <i class="fa-solid fa-handshake"></i>
+            </div>
+            <h3 class="guide-block-title">交付服务承诺</h3>
+          </div>
+          <div class="guide-block-body">
+            <div class="guide-item">
+              <div class="guide-item-icon">
+                <i class="fa-solid fa-laptop-code"></i>
+              </div>
+              <div>
+                <div class="guide-item-title">远程免费部署</div>
+                <div class="guide-item-desc">
+                  购买后由技术人员提供一次性免费远程部署服务，全程协助完成环境搭建、系统安装与初始化配置，确保系统正常运行。
+                </div>
+              </div>
+            </div>
+            <div class="guide-item">
+              <div class="guide-item-icon">
+                <i class="fa-solid fa-graduation-cap"></i>
+              </div>
+              <div>
+                <div class="guide-item-title">操作培训指导</div>
+                <div class="guide-item-desc">
+                  部署完成后，技术人员将对实际使用人员进行一对一的系统操作培训，确保每位角色（管理员、运营、销售）均能独立上手。
+                </div>
+              </div>
+            </div>
+            <div class="guide-item">
+              <div class="guide-item-icon">
+                <i class="fa-solid fa-server"></i>
+              </div>
+              <div>
+                <div class="guide-item-title">服务器选购协助</div>
+                <div class="guide-item-desc">
+                  技术人员将根据您的业务规模与预估并发量，提供服务器配置建议，并指导您完成云服务器选购，避免配置不当造成的性能瓶颈或资源浪费。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右列：环境准备 -->
+        <div class="guide-block fade-up">
+          <div class="guide-block-header">
+            <div class="guide-block-icon">
+              <i class="fa-solid fa-gear"></i>
+            </div>
+            <h3 class="guide-block-title">购买前环境准备</h3>
+          </div>
+          <div class="guide-block-body">
+            <div class="guide-item">
+              <div class="guide-item-icon">
+                <i class="fa-solid fa-envelope"></i>
+              </div>
+              <div>
+                <div class="guide-item-title">QQ 邮箱账号</div>
+                <div class="guide-item-desc">
+                  购买前请准备一个专属 QQ 邮箱账号（建议使用专门注册的工作邮箱，非私人常用账号），用于系统开启 SMTP 发信功能，向销售代表推送派单通知。
+                </div>
+              </div>
+            </div>
+            <div class="guide-note">
+              <i class="fa-solid fa-shield-halved"></i>
+              <div>
+                <div class="guide-note-title">隐私与安全说明</div>
+                <div class="guide-note-body">
+                  系统仅调用该邮箱的 SMTP 发信权限，用于发送系统通知邮件。<strong>不会对该 QQ 账号进行登录、读取或任何其他操作</strong>，对账号安全性不产生任何影响。您的账号凭据将在服务器配置完成后由技术人员协助删除，不做留存。
+                </div>
+              </div>
+            </div>
+            <div class="guide-item">
+              <div class="guide-item-icon">
+                <i class="fa-solid fa-globe"></i>
+              </div>
+              <div>
+                <div class="guide-item-title">域名（可选）</div>
+                <div class="guide-item-desc">
+                  如需通过独立域名访问系统（如 <code>yourcompany.com</code>），请提前准备好域名，技术人员将协助完成 DNS 解析配置。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部提醒条 -->
+      <div class="guide-footer-note fade-up">
+        <i class="fa-solid fa-clipboard-list"></i>
+        <span>如有任何疑问，欢迎在申请演示时与我们的技术人员直接沟通，我们将在充分了解您的需求后给出最适合的方案建议。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta" id="contact">
+    <div class="cta-inner">
+      <h2>立即申请产品演示</h2>
+      <p>我们的技术团队可根据您的实际业务场景，<br>提供一对一的系统演示与部署方案咨询。</p>
+      <a href="mailto:demo@example.com" class="btn-white">
+        <i class="fa-solid fa-paper-plane"></i>
+        预约演示
+      </a>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <p>客户智能分配管理系统</p>
+    <div class="footer-divider"></div>
+    <p>私有化部署 · 数据自主可控 · 全程操作可追溯</p>
+  </footer>
+
+  <!-- JS -->
+  <script>
+    // Navbar shadow on scroll
+    const navbar = document.getElementById('navbar');
+    window.addEventListener('scroll', () => {
+      navbar.classList.toggle('scrolled', window.scrollY > 10);
+    });
+
+    // Mobile hamburger
+    const hamburger = document.getElementById('hamburger');
+    const navLinks = document.getElementById('navLinks');
+    hamburger.addEventListener('click', () => {
+      navLinks.classList.toggle('open');
+      const icon = hamburger.querySelector('i');
+      icon.className = navLinks.classList.contains('open')
+        ? 'fa-solid fa-xmark'
+        : 'fa-solid fa-bars';
+    });
+    navLinks.querySelectorAll('a').forEach(link => {
+      link.addEventListener('click', () => {
+        navLinks.classList.remove('open');
+        hamburger.querySelector('i').className = 'fa-solid fa-bars';
+      });
+    });
+
+    // Intersection Observer for fade-up
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry, index) => {
+        if (entry.isIntersecting) {
+          const delay = Array.from(entry.target.parentElement.children)
+            .filter(el => el.classList.contains('fade-up'))
+            .indexOf(entry.target) * 100;
+          setTimeout(() => {
+            entry.target.classList.add('visible');
+          }, delay);
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+  </script>
+</body>
+</html>

@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_edit %}编辑客户{% else %}新增客户{% endif %} - 客户管理系统{% endblock %}
+
+{% block page_title %}{% if is_edit %}编辑客户{% else %}新增客户{% endif %}{% endblock %}
+
+{% block page_header %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+  <h1 class="h2">{% if is_edit %}编辑客户{% else %}新增客户{% endif %}</h1>
+  <a href="{% if is_edit %}{{ url_for('customer.customer_detail', customer_id=customer.id) }}{% else %}{{ url_for('customer.customer_list') }}{% endif %}" class="btn-action">
+    <i class="bi-arrow-left"></i> 返回
+  </a>
+</div>
+{% endblock %}
+
+{% block body %}
+<div class="page-content">
+
+  <div class="form-card">
+    <form method="post" enctype="multipart/form-data">
+      <div class="row">
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>客户名称 {% if current_user.role != 'operator' %}<span style="color: #ef4444;">*</span>{% else %}<span style="color: #6b7280;">（可选）</span>{% endif %}</label>
+            <input name="name" class="form-control" {% if current_user.role != 'operator' %}required{% endif %} placeholder="请输入客户名称" value="{% if is_edit %}{{ customer.name }}{% endif %}">
+            {% if current_user.role == 'operator' %}
+            <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+              运营录入时客户名称可以为空
+            </small>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>联系方式 {% if current_user.role == 'operator' %}<span style="color: #ef4444;">*</span>{% endif %}</label>
+            <input name="phone" class="form-control" {% if current_user.role == 'operator' %}required{% endif %} placeholder="请输入电话或微信号" value="{% if is_edit %}{{ customer.phone or '' }}{% endif %}">
+            {% if current_user.role == 'operator' %}
+            <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+              运营录入时必须填写联系方式
+            </small>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>地区 <span style="color: #ef4444;">*</span></label>
+            <select name="region" id="customerRegion" class="form-control" required>
+              <option value="">请选择地区</option>
+              {% for r in regions %}
+                <option value="{{ r.name }}" {% if is_edit and customer.region == r.name %}selected{% endif %}>{{ r.name }}</option>
+              {% endfor %}
+            </select>
+            {% if current_user.role == 'operator' %}
+            <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+              运营录入时必须选择地区
+            </small>
+            {% endif %}
+          </div>
+        </div>
+        <input type="hidden" name="sales_id" value="">
+        <input type="hidden" name="operator_id" value="">
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>客户图片</label>
+            <input type="file" name="image" class="form-control" accept="image/*">
+            {% if is_edit and customer.image_path %}
+            <div style="margin-top: 0.5rem;">
+              <img src="{{ url_for('static', filename='uploads/' + customer.image_path) }}" alt="当前图片" style="max-width: 200px; border-radius: 4px; margin-top: 0.5rem;">
+              <small style="color: #6b7280; font-size: 0.75rem; display: block; margin-top: 0.25rem;">
+                当前图片，上传新图片将替换
+              </small>
+            </div>
+            {% else %}
+            <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+              支持 JPG、PNG 格式，最大 5MB
+            </small>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-group">
+            <label>备注</label>
+            <textarea name="remark" rows="4" class="form-control" placeholder="填写客户备注信息...">{% if is_edit %}{{ customer.remark or '' }}{% endif %}</textarea>
+          </div>
+        </div>
+        <div class="col-12" style="margin-top: 1.5rem;">
+          <div style="display: flex; gap: 1rem;">
+            <button type="submit" class="btn-action primary" id="submitBtn">
+              <i class="bi-save"></i> 保存
+            </button>
+            <a href="{{ url_for('customer.customer_list') }}" class="btn-action">
+              <i class="bi-x"></i> 取消
+            </a>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// 表单提交调试信息
+document.addEventListener('DOMContentLoaded', function() {
+  const form = document.querySelector('form[method="post"]');
+  const submitBtn = document.getElementById('submitBtn');
+  
+  if (form && submitBtn) {
+    form.addEventListener('submit', function(e) {
+      console.log('========== 表单提交调试信息 ==========');
+      console.log('提交时间:', new Date().toLocaleString());
+      console.log('当前用户角色:', '{{ current_user.role }}');
+      console.log('是否为编辑模式:', {{ 'true' if is_edit else 'false' }});
+      
+      // 收集表单数据
+      const formData = new FormData(form);
+      const formDataObj = {};
+      for (let [key, value] of formData.entries()) {
+        if (key === 'image') {
+          formDataObj[key] = value ? `[文件: ${value.name || '已选择'}]` : '[未选择]';
+        } else {
+          formDataObj[key] = value || '[空]';
+        }
+      }
+      
+      console.log('表单数据:', formDataObj);
+      console.log('关键字段检查:');
+      console.log('  - 客户名称:', formDataObj.name || '[空]', formDataObj.name ? '✓' : '✗');
+      console.log('  - 联系方式:', formDataObj.phone || '[空]', formDataObj.phone ? '✓' : '✗');
+      console.log('  - 地区:', formDataObj.region || '[空]', formDataObj.region ? '✓' : '✗');
+      console.log('  - 销售ID:', formDataObj.sales_id || '[空]');
+      console.log('  - 运营ID:', formDataObj.operator_id || '[空]');
+      console.log('  - 备注:', formDataObj.remark || '[空]');
+      
+      // 验证检查
+      const isOperator = '{{ current_user.role }}' === 'operator';
+      const errors = [];
+      
+      if (isOperator) {
+        if (!formDataObj.phone || formDataObj.phone === '[空]') {
+          errors.push('运营角色：联系方式为必填项');
+        }
+        if (!formDataObj.region || formDataObj.region === '[空]') {
+          errors.push('运营角色：地区为必填项');
+        }
+        } else {
+        if (!formDataObj.name || formDataObj.name === '[空]') {
+          errors.push('非运营角色：客户名称为必填项');
+        }
+      }
+      
+      if (errors.length > 0) {
+        console.warn('⚠️ 表单验证错误:');
+        errors.forEach(err => console.warn('  -', err));
+        console.log('表单提交将被阻止');
+      } else {
+        console.log('✅ 表单验证通过，正在提交...');
+      }
+      
+      console.log('=====================================');
+    });
+    
+    // 监听表单提交后的页面加载（用于查看重定向后的状态）
+    window.addEventListener('load', function() {
+      // 检查是否有 flash 消息
+      const flashMessages = document.querySelectorAll('.alert, [role="alert"]');
+      if (flashMessages.length > 0) {
+        console.log('📢 Flash 消息:', flashMessages.length, '条');
+        flashMessages.forEach((msg, index) => {
+          console.log(`  消息 ${index + 1}:`, msg.textContent.trim());
+        });
+      }
+    });
+  }
+});
+</script>
+
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% set hide_nav = true %}
+
+{% block title %}登录 - 客户管理系统{% endblock %}
+
+{% block content %}
+  <div class="login-page">
+    <div class="login-container">
+      <div class="login-system-title">客户管理系统</div>
+      <div class="login-card">
+        <div class="heading">登录您的账户</div>
+        <form class="login-form" method="post">
+          <div class="input-field">
+            <input
+              required=""
+              autocomplete="off"
+              type="text"
+              name="username"
+              id="username"
+            />
+            <label for="username">账号</label>
+          </div>
+          <div class="input-field">
+            <input
+              required=""
+              autocomplete="off"
+              type="password"
+              name="password"
+              id="password"
+            />
+            <label for="password">密码</label>
+          </div>
+          <div class="btn-container">
+            <button type="submit" class="btn">登录</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

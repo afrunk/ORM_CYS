@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+
+{% block title %}公海客户 - 客户管理系统{% endblock %}
+
+{% block page_title %}公海客户{% endblock %}
+
+{% block body %}
+<div class="page-content">
+
+  <!-- 数据表格 -->
+  <div class="data-table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>图片</th>
+          <th>客户ID</th>
+          <th>姓名</th>
+          <th>联系方式</th>
+          <th>地区</th>
+          <th>备注信息</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in customers %}
+        <tr>
+          <td>
+            {% if c.image_path %}
+            {% set thumb_path = thumbnail_map.get(c.id) %}
+            {% set preview_path = preview_map.get(c.id) %}
+            {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
+            {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
+            {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
+            <picture>
+              {% if thumb_path %}
+              <source srcset="{{ thumb_url }}" type="image/webp">
+              {% endif %}
+            <img
+              class="customer-thumbnail"
+                src="{{ thumb_url }}"
+                data-image-url="{{ preview_url }}"
+              alt="客户图片"
+                width="40"
+                height="40"
+                style="object-fit: cover; border-radius: 4px;"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>{{ c.id }}</td>
+          <td>{{ c.name }}</td>
+          <td>{{ c.phone or '-' }}</td>
+          <td>{{ c.region or '-' }}</td>
+          <td>{{ c.remark or '-' }}</td>
+          <td>
+            {% if current_user.role in ['operator', 'super_admin'] %}
+              {% if sales_users %}
+              <form
+                method="post"
+                action="{{ url_for('customer.public_pool_assign', customer_id=c.id) }}"
+                style="display: flex; gap: 0.5rem; align-items: center;"
+              >
+                <select name="sales_id" class="form-control" style="width: auto; min-width: 150px;" required>
+                  <option value="">选择在线销售</option>
+                  {% for s in sales_users %}
+                  <option value="{{ s.id }}">
+                    {{ s.username }}{% if s.sales_profile and s.sales_profile.is_available %}（在线）{% else %}（离线）{% endif %}
+                  </option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn-action primary" style="padding: 0.5rem 1rem;">接单</button>
+              </form>
+              {% else %}
+              <span style="color: #9ca3af;">暂无在线销售</span>
+              {% endif %}
+            {% elif current_user.role == 'sales' %}
+              {% set is_online = current_user.sales_profile.is_available if current_user.sales_profile else False %}
+              {% if is_online %}
+              <form
+                method="post"
+                action="{{ url_for('customer.public_pool_claim', customer_id=c.id) }}"
+                style="display: inline-flex; gap: 0.5rem; align-items: center;"
+              >
+                <button type="submit" class="btn-action primary" style="padding: 0.4rem 0.8rem;">立即领取</button>
+              </form>
+              {% else %}
+              <span style="color: #9ca3af;">请先在客户列表页切换为“在线”</span>
+              {% endif %}
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p class="empty-state-text">暂无数据显示</p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 操作按钮 -->
+  <div class="action-buttons">
+    <button class="btn-action primary" onclick="location.href='{{ url_for('customer.customer_create') }}'">
+      <i class="bi-plus"></i> 添加
+    </button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  initPublicPoolImagePreview();
+});
+
+function initPublicPoolImagePreview() {
+  const thumbnails = document.querySelectorAll('.customer-thumbnail');
+  if (!thumbnails.length) return;
+
+  let overlay = document.querySelector('.image-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'image-preview-overlay';
+    overlay.innerHTML = `
+      <div class="image-preview-close" onclick="closeImagePreview()">×</div>
+      <img src="" alt="预览图片">
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay || e.target.classList.contains('image-preview-close')) {
+        closeImagePreview();
+      }
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeImagePreview();
+      }
+    });
+  }
+
+  thumbnails.forEach(img => {
+    img.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const imageUrl = this.getAttribute('data-image-url');
+      if (imageUrl) {
+        showImagePreview(imageUrl);
+      }
+    });
+
+    img.addEventListener('mouseenter', function() {
+      this.style.transform = 'scale(1.2)';
+      this.style.zIndex = '1000';
+      this.style.position = 'relative';
+    });
+
+    img.addEventListener('mouseleave', function() {
+      this.style.transform = 'scale(1)';
+      this.style.zIndex = 'auto';
+      this.style.position = '';
+    });
+  });
+}
+
+function showImagePreview(imageUrl) {
+  const overlay = document.querySelector('.image-preview-overlay');
+  const img = overlay.querySelector('img');
+  img.src = imageUrl;
+  overlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeImagePreview() {
+  const overlay = document.querySelector('.image-preview-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('active');
+  document.body.style.overflow = '';
+}
+</script>
+{% endblock %}
