@@ -8,7 +8,7 @@ from flask import Blueprint, g, render_template, request
 from sqlalchemy import func, case, or_, and_
 
 from ..extensions import db
-from ..models import Customer, User, Region
+from ..models import CONVERSION_STATUS_LABELS, Customer, Region, User
 from ..permissions import login_required, roles_required
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
@@ -472,12 +472,15 @@ def operator_detail(user_id):
     for c in rows:
         beijing_time = (c.created_at + timedelta(hours=8)) if c.created_at else None
         created_local = beijing_time.strftime("%Y-%m-%d %H:%M:%S") if beijing_time else "-"
+        ec = c.effective_conversion_status()
+        conv_label = "未填写" if ec is None else CONVERSION_STATUS_LABELS.get(ec, ec)
         detail_rows.append(
             {
                 "id": c.id,
                 "region": c.region or "未填写地区",
                 "created_at": created_local,
                 "is_converted": bool(c.is_converted),
+                "conversion_label": conv_label,
                 "sales": sales_map.get(c.sales_id, "-") if c.sales_id else "-",
             }
         )

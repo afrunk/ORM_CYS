@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 from flask import (
     Blueprint,
@@ -20,13 +21,41 @@ from sqlalchemy import func, or_, and_
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Customer, SalesProfile, User, Region, Notification
+from ..models import (
+    CONVERSION_STATUS_URGE_ADD,
+    Customer,
+    Notification,
+    Region,
+    SalesProfile,
+    User,
+)
 from ..notifications import send_assignment_notification
 from ..permissions import login_required
 from ..utils.images import ensure_thumbnail, ensure_preview, remove_preview, remove_thumbnail
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
 customer_bp = Blueprint("customer", __name__, template_folder="../templates")
+
+
+def _list_summary_flags(user: User) -> tuple[bool, bool, bool]:
+    """客户列表顶区统计卡片：(超管/数据员块, 运营块, 销售仅接单数).
+
+    角色字符串做 NFKC + 去空白 + 小写，避免库里有不可见字符导致模板分支失效。
+    若 role 未识别但存在 sales_profile，按销售展示（仅顶区卡片）。
+    """
+    raw = getattr(user, "role", None) or ""
+    raw = unicodedata.normalize("NFKC", str(raw))
+    role_key = "".join(raw.split()).lower()
+
+    if role_key in ("super_admin", "data_entry"):
+        return True, False, False
+    if role_key == "operator":
+        return False, True, False
+    if role_key == "sales":
+        return False, False, True
+    if getattr(user, "sales_profile", None) is not None:
+        return False, False, True
+    return False, False, False
 
 
 def _collect_failed_sales_names(remark: str) -> list[str]:
@@ -467,8 +496,14 @@ def _apply_customer_filters(query, current_user: User):
 
     # 转化/有效筛选
     is_converted = request.args.get("is_converted")
-    if is_converted in ("true", "false"):
-        query = query.filter(Customer.is_converted.is_(is_converted == "true"))
+    if is_converted == "true":
+        query = query.filter(Customer.is_converted.is_(True))
+    elif is_converted == "false":
+        query = query.filter(
+            or_(Customer.is_converted.is_(False), Customer.is_converted.is_(None))
+        )
+    elif is_converted == CONVERSION_STATUS_URGE_ADD:
+        query = query.filter(Customer.conversion_status == CONVERSION_STATUS_URGE_ADD)
 
     is_valid = request.args.get("is_valid")
     if is_valid in ("true", "false"):
@@ -826,6 +861,10 @@ def customer_list():
     )
     region_list = [r[0] for r in regions]
 
+    summary_show_admin, summary_show_operator, summary_show_sales_only = _list_summary_flags(
+        current
+    )
+
     return render_template(
         "customer/customer_list.html",
         customers=customers,
@@ -840,6 +879,9 @@ def customer_list():
         sales_with_stats=sales_with_stats,
         next_sales_by_region=next_sales_by_region,
         region_list=region_list,
+        summary_show_admin=summary_show_admin,
+        summary_show_operator=summary_show_operator,
+        summary_show_sales_only=summary_show_sales_only,
     )
 
 
@@ -871,40 +913,65 @@ def today_created_count():
 @login_required
 def region_stats():
     """返回按地区统计的新增客户数量，以及当前用户的接单/上传数量。
-    
-    对于销售：返回每个地区的新增客户数量 + 当前销售自己的接单数量
-    对于运营：返回每个地区的新增客户数量 + 运营自己的上传客户数量
+
+    对于销售：返回个人接单数量（地区列表为空）
+    对于运营：返回个人上传数量 + 在所有运营中的排名
+    对于管理员/数据员：返回地区统计列表（不过渡到卡片，不展示卡片本身）
     """
     current = g.current_user
     start_dt, end_dt = get_shift_window_utc()
-    
+    role_key = (current.role or "").strip().lower()
+
+    personal_count = 0
+    personal_label = ""
+    personal_rank = None
+    operator_ranking = None  # 运营的排名列表，供模板渲染
+
+    # 统计所有运营（operator角色）的上传数量，按降序排列
+    all_operator_counts = (
+        db.session.query(
+            User.id,
+            User.username,
+            func.count(Customer.id).label("count"),
+        )
+        .join(Customer, Customer.creator_id == User.id)
+        .filter(
+            User.role == "operator",
+            Customer.created_at >= start_dt,
+            Customer.created_at <= end_dt,
+        )
+        .group_by(User.id, User.username)
+        .order_by(func.count(Customer.id).desc())
+        .all()
+    )
+
+    # 构建运营排名字典
+    op_rank_map: dict[int, tuple[int, str, int]] = {}
+    for idx, row in enumerate(all_operator_counts, 1):
+        op_rank_map[row.id] = (idx, row.username, int(row.count))
+
     # 按地区统计新增客户数量
     region_counts = (
         db.session.query(
             Customer.region,
-            func.count(Customer.id).label('count')
+            func.count(Customer.id).label("count"),
         )
         .filter(
             Customer.created_at >= start_dt,
             Customer.created_at <= end_dt,
             Customer.region.isnot(None),
-            Customer.region != ""
+            Customer.region != "",
         )
         .group_by(Customer.region)
         .all()
     )
-    
+
     region_stats_list = [
         {"region": region, "count": int(count)}
         for region, count in region_counts
     ]
-    
-    # 根据角色统计个人数据
-    personal_count = 0
-    personal_label = ""
-    
-    if current.role == "sales":
-        # 销售：统计自己的接单数量（按 accepted_time）
+
+    if role_key == "sales":
         personal_count = (
             Customer.query.filter(
                 Customer.sales_id == current.id,
@@ -915,8 +982,7 @@ def region_stats():
             .scalar()
         )
         personal_label = "我的接单数量"
-    elif current.role == "operator":
-        # 运营：统计自己的上传客户数量（按 created_at）
+    elif role_key == "operator":
         personal_count = (
             Customer.query.filter(
                 Customer.creator_id == current.id,
@@ -927,12 +993,23 @@ def region_stats():
             .scalar()
         )
         personal_label = "我的上传数量"
-    
+        # 计算当前运营的排名
+        if current.id in op_rank_map:
+            rank, _, count = op_rank_map[current.id]
+            personal_rank = rank
+            personal_count = count
+        operator_ranking = [
+            {"rank": idx, "username": row.username, "count": int(row.count)}
+            for idx, row in enumerate(all_operator_counts, 1)
+        ]
+
     return jsonify({
         "success": True,
         "region_stats": region_stats_list,
         "personal_count": int(personal_count or 0),
         "personal_label": personal_label,
+        "personal_rank": personal_rank,
+        "operator_ranking": operator_ranking,
     })
 
 
@@ -1174,6 +1251,18 @@ def customer_edit(customer_id: int):
                 flash("客户名称不能为空。", "danger")
                 return redirect(url_for("customer.customer_edit", customer_id=customer.id))
 
+        # 超管可修改订单状态
+        if current.is_super_admin() and "status" in request.form:
+            new_status = request.form.get("status", "").strip()
+            if new_status in ("pending", "timeout", "accepted", "public_pool", "unassigned"):
+                old_status = customer.status
+                customer.status = new_status
+                if old_status != new_status:
+                    _prepend_remark(
+                        customer,
+                        f"[系统] 超级管理员 {current.username} 将状态从 {old_status} 修改为 {new_status}",
+                    )
+
         # 处理图片上传
         if "image" in request.files:
             file = request.files["image"]
@@ -1233,6 +1322,7 @@ def customer_edit(customer_id: int):
         operator_users=operator_users,
         regions=regions,
         is_edit=True,
+        can_edit_customer_status=current.is_super_admin(),
     )
 
 
@@ -1242,6 +1332,8 @@ def customer_detail(customer_id: int):
     """客户详情页 + 销售端操作。"""
     current = g.current_user
     customer = Customer.query.get_or_404(customer_id)
+    # 与侧栏一致：role 精确为 super_admin 也视为超管（与 User.is_super_admin 双保险）
+    is_super_admin_user = current.is_super_admin() or (current.role == "super_admin")
 
     # 可见范围限制
     if current.role == "operator" and customer.creator_id != current.id:
@@ -1251,14 +1343,29 @@ def customer_detail(customer_id: int):
         flash("只能查看分配给自己的客户。", "danger")
         return redirect(url_for("customer.customer_list"))
 
-    if request.method == "POST" and current.role == "sales":
-        # 只有接单后的客户才能提交销售跟进信息
-        if customer.status != "accepted":
-            flash("只有接单后的客户才能进行销售跟进。", "warning")
+    if request.method == "POST":
+        _rk = "".join(
+            unicodedata.normalize("NFKC", str(current.role or "")).split()
+        ).lower()
+        sales_follow_up = (
+            _rk == "sales"
+            and customer.sales_id == current.id
+            and customer.status == "accepted"
+        )
+        if not (sales_follow_up or is_super_admin_user):
+            flash("无权执行此操作。", "danger")
             return redirect(url_for("customer.customer_detail", customer_id=customer_id))
-        
-        customer.is_valid = request.form.get("is_valid") == "true"
-        customer.is_converted = request.form.get("is_converted") == "true"
+
+        def _tri_state_bool(key: str) -> bool | None:
+            v = (request.form.get(key) or "").strip()
+            if v == "true":
+                return True
+            if v == "false":
+                return False
+            return None
+
+        customer.is_valid = _tri_state_bool("is_valid")
+        Customer.apply_conversion_from_form(customer, request.form.get("is_converted"))
 
         # 保存无效客户的佐证截图
         invalid_file = request.files.get("invalid_proof_image")
@@ -1299,11 +1406,22 @@ def customer_detail(customer_id: int):
         ensure_preview(customer.invalid_proof_image) if customer.invalid_proof_image else None
     )
 
+    _role_key = "".join(
+        unicodedata.normalize("NFKC", str(current.role or "")).split()
+    ).lower()
+    show_sales_follow_up = (
+        _role_key == "sales"
+        and customer.sales_id == current.id
+        and customer.status == "accepted"
+    ) or is_super_admin_user
+
     return render_template(
         "customer/customer_detail.html",
         customer=customer,
         image_preview_path=image_preview_path,
         invalid_preview_path=invalid_preview_path,
+        show_sales_follow_up=show_sales_follow_up,
+        is_super_admin_user=is_super_admin_user,
     )
 
 
@@ -1353,6 +1471,7 @@ def public_pool():
                 preview_map[customer.id] = preview_rel
 
     sales_users = []
+    show_contact = True
     if current.is_super_admin() or current.role == "operator":
         sales_users = (
             User.query.join(SalesProfile, SalesProfile.user_id == User.id)
@@ -1364,6 +1483,8 @@ def public_pool():
             .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
             .all()
         )
+    elif current.role == "sales":
+        show_contact = False
 
     return render_template(
         "customer/public_pool.html",
@@ -1371,6 +1492,7 @@ def public_pool():
         thumbnail_map=thumbnail_map,
         preview_map=preview_map,
         sales_users=sales_users,
+        show_contact=show_contact,
     )
 
 

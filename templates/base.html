@@ -51,12 +51,14 @@
 
       <nav class="sidebar-nav">
         <ul class="sidebar-menu">
+          {% if current_user.role != 'operator' %}
           <li class="sidebar-item">
             <a class="sidebar-link {% if request.endpoint == 'customer.public_pool' %}active{% endif %}" href="{{ url_for('customer.public_pool') }}">
               <i class="bi-people"></i>
               <span>公海客户</span>
             </a>
           </li>
+          {% endif %}
           <li class="sidebar-item">
             <a class="sidebar-link {% if request.endpoint.startswith('customer.') and request.endpoint != 'customer.public_pool' %}active{% endif %}" href="{{ url_for('customer.customer_list') }}">
               <i class="bi-person-lines-fill"></i>

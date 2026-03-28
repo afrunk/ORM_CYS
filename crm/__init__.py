@@ -45,6 +45,32 @@ def _migrate_schema(app: Flask) -> None:
                     app.logger.info("[迁移] 已添加字段 customers.operator_id")
                 except Exception:
                     db.session.rollback()
+            if "conversion_status" not in customer_columns:
+                try:
+                    db.session.execute(
+                        text("ALTER TABLE customers ADD COLUMN conversion_status VARCHAR(32)")
+                    )
+                    db.session.commit()
+                    app.logger.info("[迁移] 已添加字段 customers.conversion_status")
+                    from .models import (
+                        CONVERSION_STATUS_CONVERTED,
+                        CONVERSION_STATUS_NOT_CONVERTED,
+                        Customer,
+                    )
+
+                    for row in Customer.query.all():
+                        if row.conversion_status is not None:
+                            continue
+                        if row.is_converted is True:
+                            row.conversion_status = CONVERSION_STATUS_CONVERTED
+                        elif row.is_converted is False:
+                            row.conversion_status = CONVERSION_STATUS_NOT_CONVERTED
+                        else:
+                            row.conversion_status = None
+                    db.session.commit()
+                    app.logger.info("[迁移] 已根据 is_converted 回填 conversion_status")
+                except Exception:
+                    db.session.rollback()
 
         # --- regions 表（可能尚未创建） ---
         if "regions" not in table_names:
@@ -119,6 +145,8 @@ def create_app() -> Flask:
         },
     )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+    # 即使未开 DEBUG，也每次请求重载模板，避免改 HTML 后必须重启进程
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
     
     # 邮件配置（QQ邮箱SMTP）
     app.config["MAIL_SERVER"] = "smtp.qq.com"
@@ -126,7 +154,7 @@ def create_app() -> Flask:
     app.config["MAIL_USE_TLS"] = True
     # 使用环境变量或默认配置
     app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "afrunk@foxmail.com")
-    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "sgcwkqlwirfcdiij")
+    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "wkqrgooalktzjjic")
     app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
 
     # 初始化扩展
@@ -350,6 +378,7 @@ def create_app() -> Flask:
                     "dispatcher_id": c.dispatcher_id,
                     "creator_id": c.creator_id,
                     "is_converted": c.is_converted,
+                    "conversion_status": getattr(c, "conversion_status", None),
                     "is_valid": c.is_valid,
                     "invalid_proof_image": c.invalid_proof_image,
                     "remark": c.remark,
@@ -427,6 +456,7 @@ def create_app() -> Flask:
                     dispatcher_id=c["dispatcher_id"],
                     creator_id=c["creator_id"],
                     is_converted=c["is_converted"],
+                    conversion_status=c.get("conversion_status"),
                     is_valid=c["is_valid"],
                     invalid_proof_image=c["invalid_proof_image"],
                     remark=c["remark"],

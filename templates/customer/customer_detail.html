@@ -15,6 +15,22 @@
 
 {% block body %}
 <div class="page-content">
+  {# 与后端 show_sales_follow_up 一致；超管与侧栏同条件 role=='super_admin' 兜底（避免仅后端布尔为 False 时整块不渲染） #}
+  {% set _super_by_role = current_user is not none and current_user.role == 'super_admin' %}
+  {% if show_sales_follow_up is defined %}
+    {% set _show_follow = show_sales_follow_up or _super_by_role %}
+  {% else %}
+    {% set _show_follow = (
+      current_user.role == 'sales'
+      and customer.sales_id == current_user.id
+      and customer.status == 'accepted'
+    ) or _super_by_role or (current_user.is_super_admin() if current_user else false) %}
+  {% endif %}
+  {% if is_super_admin_user is defined %}
+    {% set _is_su = is_super_admin_user or _super_by_role %}
+  {% else %}
+    {% set _is_su = _super_by_role or (current_user.is_super_admin() if current_user else false) %}
+  {% endif %}
 
   <div class="form-card">
     <h5 style="margin-bottom: 1.5rem; font-weight: 600;">基本信息</h5>
@@ -137,34 +153,18 @@
     </div>
   </div>
 
-  <div class="form-card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
-      <h5 style="margin: 0; font-weight: 600;">备注信息</h5>
-      {% if customer.remark %}
-      <small style="color: #6b7280;">共 {{ customer.remark.splitlines()|length }} 条记录</small>
-      {% endif %}
-    </div>
-    {% if customer.remark %}
-    <div style="max-height: 260px; overflow-y: auto; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;">
-      {% for line in customer.remark.splitlines() %}
-      <div style="font-size: 0.95rem; color: #1f2937; line-height: 1.7; {% if not loop.last %}margin-bottom: 0.65rem;{% endif %}">
-        {{ line }}
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="empty-state" style="padding: 1.25rem; border-radius: 12px; background: #f8fafc; border: 1px dashed #d1d5db; color: #6b7280;">
-      暂无备注
-    </div>
-    {% endif %}
-  </div>
-
-  {% if current_user.role == 'sales' and customer.sales_id == current_user.id and customer.status == 'accepted' %}
-  <div class="form-card">
+  {# 销售跟进放在备注上方：备注往往很长，超管不用滚到底才能看到 #}
+  {% if _show_follow %}
+  <!-- crm:sales-follow-up -->
+  <div class="form-card" id="sales-follow-up-section">
     <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
       <div>
         <h5 style="margin-bottom: 0.25rem; font-weight: 600;">销售跟进</h5>
+        {% if _is_su %}
+        <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">超级管理员可修改任意客户的「是否有效」「是否转化」、备注及无效佐证截图，不受接单状态限制。</p>
+        {% else %}
         <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">更新有效性、转化和跟进记录，按钮统一放在底部方便操作。</p>
+        {% endif %}
       </div>
     </div>
     <form method="post" enctype="multipart/form-data">
@@ -184,8 +184,9 @@
             <label>是否转化</label>
             <select name="is_converted" class="form-control">
             <option value="">未填写</option>
-              <option value="true" {% if customer.is_converted is true %}selected{% endif %}>已转化</option>
-              <option value="false" {% if customer.is_converted is false %}selected{% endif %}>未转化</option>
+              <option value="true" {% if customer.effective_conversion_status() == 'converted' %}selected{% endif %}>已转化</option>
+              <option value="false" {% if customer.effective_conversion_status() == 'not_converted' %}selected{% endif %}>未转化</option>
+              <option value="urge_add" {% if customer.effective_conversion_status() == 'urge_add' %}selected{% endif %}>未通过，催加</option>
           </select>
           </div>
         </div>
@@ -199,20 +200,8 @@
               placeholder="输入新的跟进备注，将自动附带时间戳并追加到历史记录顶部。"
             ></textarea>
           </div>
-          {% if customer.remark %}
-          <div style="margin-top: 1rem;">
-            <div style="font-weight: 600; margin-bottom: 0.5rem;">历史备注</div>
-            <div style="max-height: 200px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.75rem; background: #f9fafb;">
-              {% for line in customer.remark.splitlines() %}
-              <div style="font-size: 0.9rem; color: #374151; line-height: 1.6; {% if not loop.last %}margin-bottom: 0.35rem;{% endif %}">
-                {{ line }}
-              </div>
-              {% endfor %}
-            </div>
-          </div>
-          {% endif %}
         </div>
-        {% if customer.is_valid is false or customer.invalid_proof_image %}
+        {% if customer.is_valid is false or customer.invalid_proof_image or _is_su %}
         <div class="col-12">
           <div class="form-group">
             <label>无效佐证截图</label>
@@ -234,6 +223,28 @@
     </form>
   </div>
   {% endif %}
+
+  <div class="form-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+      <h5 style="margin: 0; font-weight: 600;">备注信息</h5>
+      {% if customer.remark %}
+      <small style="color: #6b7280;">共 {{ customer.remark.splitlines()|length }} 条记录</small>
+      {% endif %}
+    </div>
+    {% if customer.remark %}
+    <div style="max-height: 260px; overflow-y: auto; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;">
+      {% for line in customer.remark.splitlines() %}
+      <div style="font-size: 0.95rem; color: #1f2937; line-height: 1.7; {% if not loop.last %}margin-bottom: 0.65rem;{% endif %}">
+        {{ line }}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 1.25rem; border-radius: 12px; background: #f8fafc; border: 1px dashed #d1d5db; color: #6b7280;">
+      暂无备注
+    </div>
+    {% endif %}
+  </div>
   </div>
 <script>
 document.addEventListener('DOMContentLoaded', function() {

@@ -12,18 +12,25 @@
     <table class="data-table">
       <thead>
         <tr>
+          {% if show_contact %}
           <th>图片</th>
+          {% endif %}
           <th>客户ID</th>
           <th>姓名</th>
+          {% if show_contact %}
           <th>联系方式</th>
           <th>地区</th>
           <th>备注信息</th>
+          {% else %}
+          <th>地区</th>
+          {% endif %}
           <th>操作</th>
         </tr>
       </thead>
       <tbody>
         {% for c in customers %}
         <tr>
+          {% if show_contact %}
           <td>
             {% if c.image_path %}
             {% set thumb_path = thumbnail_map.get(c.id) %}
@@ -51,11 +58,16 @@
             <span style="color: #9ca3af;">-</span>
             {% endif %}
           </td>
+          {% endif %}
           <td>{{ c.id }}</td>
           <td>{{ c.name }}</td>
+          {% if show_contact %}
           <td>{{ c.phone or '-' }}</td>
           <td>{{ c.region or '-' }}</td>
           <td>{{ c.remark or '-' }}</td>
+          {% else %}
+          <td>{{ c.region or '-' }}</td>
+          {% endif %}
           <td>
             {% if current_user.role in ['operator', 'super_admin'] %}
               {% if sales_users %}
@@ -97,7 +109,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="7" class="empty-state">
+          <td colspan="{{ 7 if show_contact else 4 }}" class="empty-state">
             <div class="empty-state-icon">📋</div>
             <p class="empty-state-text">暂无数据显示</p>
           </td>

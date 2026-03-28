@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import unicodedata
+
 from sqlalchemy import func
 
 from .extensions import db
+
+# 客户「是否转化」细分状态（conversion_status）；is_converted 仅表示「已转化」供统计筛选
+CONVERSION_STATUS_CONVERTED = "converted"
+CONVERSION_STATUS_NOT_CONVERTED = "not_converted"
+CONVERSION_STATUS_URGE_ADD = "urge_add"
+
+CONVERSION_STATUS_LABELS = {
+    CONVERSION_STATUS_CONVERTED: "已转化",
+    CONVERSION_STATUS_NOT_CONVERTED: "未转化",
+    CONVERSION_STATUS_URGE_ADD: "未通过，催加",
+}
 
 
 class User(db.Model):
@@ -52,7 +65,8 @@ class User(db.Model):
     )
 
     def is_super_admin(self) -> bool:
-        return self.role == "super_admin"
+        raw = unicodedata.normalize("NFKC", str(self.role or ""))
+        return "".join(raw.split()).lower() == "super_admin"
 
 class SalesProfile(db.Model):
     """销售扩展表，记录派单序号等配置。"""
@@ -94,7 +108,9 @@ class Customer(db.Model):
     dispatcher_id = db.Column(db.Integer, db.ForeignKey("users.id"))
     creator_id = db.Column(db.Integer, db.ForeignKey("users.id"))
 
-    is_converted = db.Column(db.Boolean, default=False)
+    # True 仅当「已转化」；与 conversion_status 同步，供既有统计/筛选 SQL 使用
+    is_converted = db.Column(db.Boolean, nullable=True)
+    conversion_status = db.Column(db.String(32), nullable=True)
     is_valid = db.Column(db.Boolean, default=True)
     invalid_proof_image = db.Column(db.String(255))
     remark = db.Column(db.Text)
@@ -112,6 +128,40 @@ class Customer(db.Model):
     notifications = db.relationship(
         "Notification", back_populates="customer", lazy="dynamic"
     )
+
+    def effective_conversion_status(self) -> str | None:
+        """用于展示/表单：converted | not_converted | urge_add；None 表示未填写。"""
+        s = self.conversion_status
+        if s in (
+            CONVERSION_STATUS_CONVERTED,
+            CONVERSION_STATUS_NOT_CONVERTED,
+            CONVERSION_STATUS_URGE_ADD,
+        ):
+            return s
+        if self.is_converted is True:
+            return CONVERSION_STATUS_CONVERTED
+        if self.is_converted is False:
+            return CONVERSION_STATUS_NOT_CONVERTED
+        return None
+
+    @staticmethod
+    def apply_conversion_from_form(customer: "Customer", raw: str | None) -> None:
+        v = (raw or "").strip()
+        if v in ("true", CONVERSION_STATUS_CONVERTED):
+            customer.conversion_status = CONVERSION_STATUS_CONVERTED
+            customer.is_converted = True
+        elif v in ("false", CONVERSION_STATUS_NOT_CONVERTED):
+            customer.conversion_status = CONVERSION_STATUS_NOT_CONVERTED
+            customer.is_converted = False
+        elif v == CONVERSION_STATUS_URGE_ADD:
+            customer.conversion_status = CONVERSION_STATUS_URGE_ADD
+            customer.is_converted = False
+        elif v == "":
+            customer.conversion_status = None
+            customer.is_converted = None
+        else:
+            customer.conversion_status = None
+            customer.is_converted = None
 
 
 class Notification(db.Model):

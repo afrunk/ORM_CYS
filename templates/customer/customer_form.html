@@ -21,11 +21,11 @@
       <div class="row">
         <div class="col-md-6">
           <div class="form-group">
-            <label>客户名称 {% if current_user.role != 'operator' %}<span style="color: #ef4444;">*</span>{% else %}<span style="color: #6b7280;">（可选）</span>{% endif %}</label>
-            <input name="name" class="form-control" {% if current_user.role != 'operator' %}required{% endif %} placeholder="请输入客户名称" value="{% if is_edit %}{{ customer.name }}{% endif %}">
+            <label>客户名称 <span style="color: #ef4444;">*</span></label>
+            <input name="name" class="form-control" required placeholder="请输入客户名称" value="{% if is_edit %}{{ customer.name }}{% endif %}">
             {% if current_user.role == 'operator' %}
             <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
-              运营录入时客户名称可以为空
+              运营录入时联系方式与地区为必填项
             </small>
             {% endif %}
           </div>
@@ -57,6 +57,21 @@
             {% endif %}
           </div>
         </div>
+        {% if is_edit and can_edit_customer_status %}
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>订单状态</label>
+            <select name="status" class="form-control">
+              <option value="pending" {% if customer.status == 'pending' %}selected{% endif %}>待接单</option>
+              <option value="timeout" {% if customer.status == 'timeout' %}selected{% endif %}>超时</option>
+              <option value="accepted" {% if customer.status == 'accepted' %}selected{% endif %}>已接单</option>
+              <option value="public_pool" {% if customer.status == 'public_pool' %}selected{% endif %}>公海</option>
+              <option value="unassigned" {% if customer.status == 'unassigned' %}selected{% endif %}>未分配</option>
+            </select>
+            <small style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;">仅超级管理员可修改</small>
+          </div>
+        </div>
+        {% endif %}
         <input type="hidden" name="sales_id" value="">
         <input type="hidden" name="operator_id" value="">
         <div class="col-md-6">
@@ -131,31 +146,12 @@ document.addEventListener('DOMContentLoaded', function() {
       console.log('  - 运营ID:', formDataObj.operator_id || '[空]');
       console.log('  - 备注:', formDataObj.remark || '[空]');
       
-      // 验证检查
-      const isOperator = '{{ current_user.role }}' === 'operator';
-      const errors = [];
-      
-      if (isOperator) {
-        if (!formDataObj.phone || formDataObj.phone === '[空]') {
-          errors.push('运营角色：联系方式为必填项');
-        }
-        if (!formDataObj.region || formDataObj.region === '[空]') {
-          errors.push('运营角色：地区为必填项');
-        }
-        } else {
-        if (!formDataObj.name || formDataObj.name === '[空]') {
-          errors.push('非运营角色：客户名称为必填项');
-        }
+      if (!formDataObj.name || formDataObj.name === '[空]') {
+        e.preventDefault();
+        alert('必须填写名称');
+        return;
       }
-      
-      if (errors.length > 0) {
-        console.warn('⚠️ 表单验证错误:');
-        errors.forEach(err => console.warn('  -', err));
-        console.log('表单提交将被阻止');
-      } else {
-        console.log('✅ 表单验证通过，正在提交...');
-      }
-      
+
       console.log('=====================================');
     });
     

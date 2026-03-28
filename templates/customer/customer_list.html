@@ -266,8 +266,8 @@
 
   {% else %}
 
-  <!-- 顶部操作区：添加按钮 + 统计卡片 -->
-  {% if current_user.role != 'sales' %}
+  <!-- 顶区统计：由后端 summary_show_* 布尔值控制，互斥且不受 Jinja 字符串比较影响 -->
+  {% if summary_show_admin or summary_show_operator %}
   <div class="page-header-summary-row">
   <div class="page-header">
     <a href="{{ url_for('customer.customer_create') }}" class="btn-action primary">
@@ -275,7 +275,7 @@
     </a>
     </div>
     <div class="page-summary-row">
-      {% if current_user.role in ['super_admin', 'data_entry'] and next_sales_by_region %}
+      {% if summary_show_admin and next_sales_by_region %}
       <div class="summary-card next-sales-card">
         <div class="summary-card-label">各地区下一位待派销售</div>
         <div class="next-sales-list">
@@ -293,13 +293,13 @@
       </div>
       {% endif %}
 
+      {% if summary_show_admin %}
       <div class="summary-card" id="todayCreatedSummary">
         <div class="summary-card-label">当日新增客户</div>
         <div class="summary-card-value" id="todayCreatedCount">--</div>
         <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
       </div>
-      
-      <!-- 地区统计和个人统计 -->
+
       <div class="summary-card" id="regionStatsSummary" style="min-width: 300px;">
         <div class="summary-card-label">地区新增统计</div>
         <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
@@ -310,32 +310,30 @@
           <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
         </div>
       </div>
+      {% endif %}
+
+      {% if summary_show_operator %}
+      <div class="summary-card operator-ranking-card" id="operatorRankingCard">
+        <div class="summary-card-label">我的当日上传排名</div>
+        <div class="operator-ranking-body" id="operatorRankingBody">
+          <div style="color: #9ca3af; font-size: 0.875rem;">加载中...</div>
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
-  {% else %}
-  <!-- 销售角色：仅显示统计卡片 -->
+  {% endif %}
+  {% if summary_show_sales_only %}
   <div class="page-summary-row">
-    <div class="summary-card" id="todayCreatedSummary">
-      <div class="summary-card-label">当日新增客户</div>
-      <div class="summary-card-value" id="todayCreatedCount">--</div>
+    <div class="summary-card personal-stat-card" id="salesPersonalCard">
+      <div class="summary-card-label">我的接单数量</div>
+      <div class="summary-card-value" id="salesPersonalCount">--</div>
       <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
-    </div>
-    
-    <!-- 地区统计和个人统计 -->
-    <div class="summary-card" id="regionStatsSummary" style="min-width: 300px;">
-      <div class="summary-card-label">地区新增统计</div>
-      <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
-        <div style="color: #9ca3af;">加载中...</div>
-      </div>
-      <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
-        <span id="personalStatsLabel" style="font-weight: 600;"></span>
-        <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
-      </div>
     </div>
   </div>
   {% endif %}
 
-  {% if current_user.role == 'sales' %}
+  {% if summary_show_sales_only %}
   {% set is_online = current_user.sales_profile.is_available if current_user.sales_profile else False %}
   <div
     class="sales-availability-card {{ 'online' if is_online else 'offline' }}"
@@ -426,6 +424,7 @@
               <option value="">全部</option>
               <option value="true" {% if request.args.get('is_converted') == 'true' %}selected{% endif %}>已转化</option>
               <option value="false" {% if request.args.get('is_converted') == 'false' %}selected{% endif %}>未转化</option>
+              <option value="urge_add" {% if request.args.get('is_converted') == 'urge_add' %}selected{% endif %}>未通过，催加</option>
             </select>
           </div>
           <div class="filter-item">
@@ -660,12 +659,17 @@
           </td>
           {% if current_user.role != 'operator' %}
           <td>
-            {% if c.is_converted is none %}
+            {% set ec = c.effective_conversion_status() %}
+            {% if ec is none %}
             <span style="color: #9ca3af;">未填写</span>
-            {% elif c.is_converted %}
+            {% elif ec == 'converted' %}
             <span style="color: #2563eb; font-weight: 600;">已转化</span>
-            {% else %}
+            {% elif ec == 'not_converted' %}
             <span style="color: #6b7280; font-weight: 600;">未转化</span>
+            {% elif ec == 'urge_add' %}
+            <span style="color: #d97706; font-weight: 600;">未通过，催加</span>
+            {% else %}
+            <span style="color: #6b7280; font-weight: 600;">{{ ec }}</span>
             {% endif %}
           </td>
           {% endif %}
@@ -830,13 +834,33 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   }
   
-  // 载入当日新增客户总量并定时刷新
+// 载入当日新增客户总量并定时刷新（仅管理员/数据员）
+const todayCreatedEl = document.getElementById('todayCreatedCount');
+if (todayCreatedEl) {
   refreshTodayCreatedCount();
-  setInterval(refreshTodayCreatedCount, 60000); // 每 60 秒刷新一次
-  
-  // 载入地区统计和个人统计
+  setInterval(refreshTodayCreatedCount, 60000);
+}
+
+// 载入地区统计和个人统计（管理员/数据员）
+const regionStatsEl = document.getElementById('regionStatsList');
+if (regionStatsEl) {
   refreshRegionStats();
-  setInterval(refreshRegionStats, 60000); // 每 60 秒刷新一次
+  setInterval(refreshRegionStats, 60000);
+}
+
+// 载入销售个人接单数量
+const salesPersonalEl = document.getElementById('salesPersonalCount');
+if (salesPersonalEl) {
+  refreshRegionStats();
+  setInterval(refreshRegionStats, 60000);
+}
+
+// 载入运营排名
+const operatorRankingEl = document.getElementById('operatorRankingBody');
+if (operatorRankingEl) {
+  refreshRegionStats();
+  setInterval(refreshRegionStats, 60000);
+}
 
   initImagePreview();
   initSalesAvailabilityToggle();
@@ -875,8 +899,10 @@ async function refreshRegionStats() {
   const regionStatsList = document.getElementById('regionStatsList');
   const personalStatsLabel = document.getElementById('personalStatsLabel');
   const personalStatsCount = document.getElementById('personalStatsCount');
-  
-  if (!regionStatsList || !personalStatsLabel || !personalStatsCount) return;
+  const salesPersonalCount = document.getElementById('salesPersonalCount');
+  const operatorRankingBody = document.getElementById('operatorRankingBody');
+
+  if (!regionStatsList && !salesPersonalCount && !operatorRankingBody) return;
 
   try {
     const resp = await fetch('/customers/summary/region-stats', {
@@ -884,10 +910,12 @@ async function refreshRegionStats() {
     });
     if (!resp.ok) throw new Error('网络错误：' + resp.status);
     const data = await resp.json();
-    if (data && data.success) {
-      // 显示地区统计
+    if (!data || !data.success) return;
+
+    // 管理员/数据员：地区统计 + 个人统计
+    if (regionStatsList && personalStatsLabel && personalStatsCount) {
       if (data.region_stats && data.region_stats.length > 0) {
-        regionStatsList.innerHTML = data.region_stats.map(item => 
+        regionStatsList.innerHTML = data.region_stats.map(item =>
           `<div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
             <span>${item.region || '未设置'}</span>
             <span style="font-weight: 600; color: #2563eb;">${item.count}</span>
@@ -896,19 +924,39 @@ async function refreshRegionStats() {
       } else {
         regionStatsList.innerHTML = '<div style="color: #9ca3af;">暂无数据</div>';
       }
-      
-      // 显示个人统计
       if (data.personal_label) {
         personalStatsLabel.textContent = data.personal_label + '：';
         personalStatsCount.textContent = data.personal_count;
+      }
+    }
+
+    // 销售：个人接单数量
+    if (salesPersonalCount) {
+      salesPersonalCount.textContent = data.personal_count;
+    }
+
+    // 运营：上传排名
+    if (operatorRankingBody) {
+      if (data.operator_ranking && data.operator_ranking.length > 0) {
+        operatorRankingBody.innerHTML = data.operator_ranking.map(item => {
+          const isMe = item.rank === data.personal_rank;
+          const rankColor = isMe ? '#2563eb' : (item.rank <= 3 ? '#f59e0b' : '#9ca3af');
+          const fontWeight = isMe ? '700' : '400';
+          const bgStyle = isMe ? 'background: #eff6ff; border-radius: 6px;' : '';
+          return `<div class="operator-ranking-item" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.4rem; ${bgStyle}">
+            <span class="op-rank-num" style="width: 1.25rem; font-weight: ${fontWeight}; color: ${rankColor}; text-align: center; flex-shrink: 0;">${item.rank}</span>
+            <span class="op-rank-name" style="flex: 1; font-size: 0.8125rem; font-weight: ${fontWeight}; color: ${isMe ? '#1d4ed8' : '#374151'};">${item.username}${isMe ? ' (我)' : ''}</span>
+            <span class="op-rank-count" style="font-weight: 700; color: ${isMe ? '#2563eb' : '#111827'}; font-size: 0.875rem;">${item.count}</span>
+          </div>`;
+        }).join('');
       } else {
-        personalStatsLabel.textContent = '';
-        personalStatsCount.textContent = '';
+        operatorRankingBody.innerHTML = '<div style="color: #9ca3af; font-size: 0.875rem;">暂无数据</div>';
       }
     }
   } catch (err) {
     console.error('Failed to load region stats:', err);
-    regionStatsList.innerHTML = '<div style="color: #dc2626;">加载失败</div>';
+    if (regionStatsList) regionStatsList.innerHTML = '<div style="color: #dc2626;">加载失败</div>';
+    if (operatorRankingBody) operatorRankingBody.innerHTML = '<div style="color: #dc2626; font-size: 0.875rem;">加载失败</div>';
   }
 }
 

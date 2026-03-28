@@ -63,7 +63,7 @@
             <td>{{ r.id }}</td>
             <td>{{ r.region }}</td>
             <td>{{ r.created_at }}</td>
-            <td>{{ "是" if r.is_converted else "否" }}</td>
+            <td>{{ r.conversion_label }}</td>
             <td>{{ r.sales }}</td>
           </tr>
           {% else %}

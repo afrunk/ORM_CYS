@@ -1,4 +1,4 @@
-﻿/* 基础样式 - 专业紧凑设计 */
+/* 基础样式 - 专业紧凑设计 */
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -650,6 +650,31 @@ body:has(.sidebar-dark.collapsed) .page-header-modern::after {
   background: #eff6ff;
   color: #1d4ed8;
   font-size: 0.75rem;
+}
+
+/* 销售个人统计卡片 */
+.personal-stat-card {
+  min-width: 220px;
+  text-align: center;
+  align-items: center;
+}
+
+/* 运营排名卡片 */
+.operator-ranking-card {
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.operator-ranking-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.25rem;
+}
+
+.operator-ranking-item:hover {
+  background: #f9fafb;
+  border-radius: 6px;
 }
 
 /* 页面内容区域 - 使用 Bootstrap 工具类，只做最小调整 */
