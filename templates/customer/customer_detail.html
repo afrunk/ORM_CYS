@@ -175,19 +175,18 @@
             <select name="is_valid" class="form-control">
             <option value="">未填写</option>
               <option value="true" {% if customer.is_valid is true %}selected{% endif %}>有效</option>
-              <option value="false" {% if customer.is_valid is false %}selected{% endif %}>无效</option>
-          </select>
+              <option value="false" {% if customer.is_valid is false and customer.effective_conversion_status() != 'urge_add' %}selected{% endif %}>无效</option>
+              <option value="urge_add" {% if customer.effective_conversion_status() == 'urge_add' %}selected{% endif %}>未通过，催加</option>
+            </select>
           </div>
         </div>
         <div class="col-md-6">
           <div class="form-group">
             <label>是否转化</label>
             <select name="is_converted" class="form-control">
-            <option value="">未填写</option>
-              <option value="true" {% if customer.effective_conversion_status() == 'converted' %}selected{% endif %}>已转化</option>
-              <option value="false" {% if customer.effective_conversion_status() == 'not_converted' %}selected{% endif %}>未转化</option>
-              <option value="urge_add" {% if customer.effective_conversion_status() == 'urge_add' %}selected{% endif %}>未通过，催加</option>
-          </select>
+              <option value="true" {% if customer.conversion_display_status() == 'converted' %}selected{% endif %}>已转化</option>
+              <option value="false" {% if customer.conversion_display_status() == 'not_converted' %}selected{% endif %}>未转化</option>
+            </select>
           </div>
         </div>
         <div class="col-12">

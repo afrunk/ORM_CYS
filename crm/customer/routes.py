@@ -502,12 +502,17 @@ def _apply_customer_filters(query, current_user: User):
         query = query.filter(
             or_(Customer.is_converted.is_(False), Customer.is_converted.is_(None))
         )
-    elif is_converted == CONVERSION_STATUS_URGE_ADD:
-        query = query.filter(Customer.conversion_status == CONVERSION_STATUS_URGE_ADD)
 
     is_valid = request.args.get("is_valid")
-    if is_valid in ("true", "false"):
-        query = query.filter(Customer.is_valid.is_(is_valid == "true"))
+    if is_valid == "true":
+        query = query.filter(Customer.is_valid.is_(True))
+    elif is_valid == "false":
+        query = query.filter(
+            Customer.is_valid.is_(False),
+            or_(Customer.conversion_status != CONVERSION_STATUS_URGE_ADD, Customer.conversion_status.is_(None))
+        )
+    elif is_valid == "urge_add":
+        query = query.filter(Customer.conversion_status == CONVERSION_STATUS_URGE_ADD)
 
     # 二级快速筛选：仅超时订单
     only_timeout = request.args.get("only_timeout")
@@ -1364,8 +1369,14 @@ def customer_detail(customer_id: int):
                 return False
             return None
 
-        customer.is_valid = _tri_state_bool("is_valid")
-        Customer.apply_conversion_from_form(customer, request.form.get("is_converted"))
+        is_valid_raw = (request.form.get("is_valid") or "").strip()
+        if is_valid_raw == "urge_add":
+            customer.is_valid = False
+            customer.conversion_status = CONVERSION_STATUS_URGE_ADD
+            customer.is_converted = False
+        else:
+            customer.is_valid = _tri_state_bool("is_valid")
+            Customer.apply_conversion_from_form(customer, request.form.get("is_converted"))
 
         # 保存无效客户的佐证截图
         invalid_file = request.files.get("invalid_proof_image")

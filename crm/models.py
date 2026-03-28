@@ -144,6 +144,15 @@ class Customer(db.Model):
             return CONVERSION_STATUS_NOT_CONVERTED
         return None
 
+    def conversion_display_status(self) -> str:
+        """用于「转化」列与转化下拉框：只区分已转化 / 未转化。
+
+        「未通过，催加」仅存于有效性侧，此处一律按未转化展示；未填写亦默认未转化。
+        """
+        if self.effective_conversion_status() == CONVERSION_STATUS_CONVERTED:
+            return CONVERSION_STATUS_CONVERTED
+        return CONVERSION_STATUS_NOT_CONVERTED
+
     @staticmethod
     def apply_conversion_from_form(customer: "Customer", raw: str | None) -> None:
         v = (raw or "").strip()

@@ -472,8 +472,8 @@ def operator_detail(user_id):
     for c in rows:
         beijing_time = (c.created_at + timedelta(hours=8)) if c.created_at else None
         created_local = beijing_time.strftime("%Y-%m-%d %H:%M:%S") if beijing_time else "-"
-        ec = c.effective_conversion_status()
-        conv_label = "未填写" if ec is None else CONVERSION_STATUS_LABELS.get(ec, ec)
+        cds = c.conversion_display_status()
+        conv_label = CONVERSION_STATUS_LABELS.get(cds, cds)
         detail_rows.append(
             {
                 "id": c.id,

@@ -424,7 +424,6 @@
               <option value="">全部</option>
               <option value="true" {% if request.args.get('is_converted') == 'true' %}selected{% endif %}>已转化</option>
               <option value="false" {% if request.args.get('is_converted') == 'false' %}selected{% endif %}>未转化</option>
-              <option value="urge_add" {% if request.args.get('is_converted') == 'urge_add' %}selected{% endif %}>未通过，催加</option>
             </select>
           </div>
           <div class="filter-item">
@@ -436,6 +435,7 @@
               <option value="">全部</option>
               <option value="true" {% if request.args.get('is_valid') == 'true' %}selected{% endif %}>有效</option>
               <option value="false" {% if request.args.get('is_valid') == 'false' %}selected{% endif %}>无效</option>
+              <option value="urge_add" {% if request.args.get('is_valid') == 'urge_add' %}selected{% endif %}>未通过，催加</option>
             </select>
           </div>
           <div class="filter-item">
@@ -649,27 +649,23 @@
             </span>
           </td>
           <td>
-            {% if c.is_valid is none %}
+            {% if c.is_valid is none and c.effective_conversion_status() != 'urge_add' %}
             <span style="color: #9ca3af;">未填写</span>
             {% elif c.is_valid %}
             <span style="color: #059669; font-weight: 600;">有效</span>
+            {% elif c.effective_conversion_status() == 'urge_add' %}
+            <span style="color: #d97706; font-weight: 600;">未通过，催加</span>
             {% else %}
             <span style="color: #dc2626; font-weight: 600;">无效</span>
             {% endif %}
           </td>
           {% if current_user.role != 'operator' %}
           <td>
-            {% set ec = c.effective_conversion_status() %}
-            {% if ec is none %}
-            <span style="color: #9ca3af;">未填写</span>
-            {% elif ec == 'converted' %}
+            {% set ec = c.conversion_display_status() %}
+            {% if ec == 'converted' %}
             <span style="color: #2563eb; font-weight: 600;">已转化</span>
-            {% elif ec == 'not_converted' %}
-            <span style="color: #6b7280; font-weight: 600;">未转化</span>
-            {% elif ec == 'urge_add' %}
-            <span style="color: #d97706; font-weight: 600;">未通过，催加</span>
             {% else %}
-            <span style="color: #6b7280; font-weight: 600;">{{ ec }}</span>
+            <span style="color: #6b7280; font-weight: 600;">未转化</span>
             {% endif %}
           </td>
           {% endif %}
