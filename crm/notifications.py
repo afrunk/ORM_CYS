@@ -162,11 +162,6 @@ def send_email_notification(sales: User, customer: Customer) -> None:
                 </div>
                 
                 <div class="info-row">
-                    <div class="info-label">联系电话</div>
-                    <div class="info-value">{customer.phone or '未提供'}</div>
-                </div>
-                
-                <div class="info-row">
                     <div class="info-label">客户地区</div>
                     <div class="info-value">{customer.region or '未指定'}</div>
                 </div>
