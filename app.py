@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from flask import Flask
+from flask import jsonify
 
 from crm import create_app
 from crm.customer.routes import reassign_timeouts
 
 
-def create_flask_app() -> Flask:
+def create_flask_app() -> "Flask":
     """兼容 WSGI 的应用创建函数。"""
-    app = create_app()
+    from flask import Flask
+    from flask import Flask as _Flask
+
+    app: "Flask" = create_app()
+
+    # 健康检查端点（供 watchdog 监控使用）
+    @app.route("/health")
+    def health_check():
+        return jsonify({"status": "ok"})
 
     # 注册一个简单的 CLI 命令，用于执行超时单重派
     @app.cli.command("reassign-timeouts")

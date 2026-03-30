@@ -1,11 +1,53 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import timedelta
+from logging.handlers import RotatingFileHandler
 
 from flask import Flask
 
 from .extensions import db
+
+
+def _configure_logger(app: Flask, log_dir: str = "logs") -> None:
+    """配置 RotatingFileHandler，防止日志文件无限膨胀。
+
+    - 单文件最大 10MB，超出自动切分
+    - 最多保留 5 个历史备份文件（.log.1 ~ .log.5）
+    - 格式：时间戳 | 级别 | 模块名 | 消息
+    """
+    import logging
+
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "app.log")
+
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(fmt)
+    handler.setLevel(logging.INFO)
+
+    # 接管 Flask 自身日志 + 所有通过 app.logger 输出的日志
+    app.logger.addHandler(handler)
+    app.logger.setLevel(logging.INFO)
+    # 防止日志向上游 root logger 重复输出
+    app.logger.propagate = False
+
+    # 同时输出到 stdout（方便 Docker / systemd journal 采集）
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+    console.setLevel(logging.INFO)
+    app.logger.addHandler(console)
+
+    app.logger.info(f"[日志] 文件日志已配置：{log_path}")
 
 
 def _migrate_schema(app: Flask) -> None:
@@ -129,19 +171,24 @@ def create_app() -> Flask:
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///crm.db"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+    # 配置 RotatingFileHandler：单文件最大 10MB，保留 5 个轮转备份
+    _configure_logger(app, log_dir="../logs")
+
     # SQLAlchemy 连接池配置（生产环境建议在环境变量或实例配置中覆盖）
     # 注：如果在服务器上使用 MySQL / PostgreSQL，这些参数同样会生效
     app.config.setdefault(
         "SQLALCHEMY_ENGINE_OPTIONS",
         {
             # 基础连接池大小
-            "pool_size": 20,
+            "pool_size": 50,
             # 允许的额外连接数（超过 pool_size 后临时创建）
-            "max_overflow": 40,
+            "max_overflow": 100,
             # 在每次借出连接前执行 ping，防止“断开但池子不知情”的连接导致报错
             "pool_pre_ping": True,
-            # 定期回收连接，单位秒（这里为 30 分钟）
-            "pool_recycle": 1800,
+            # 连接池为空时最大等待秒数（超时后抛 TimeoutError）
+            "pool_timeout": 30,
+            # 定期回收连接（1 小时，防止 MySQL 断连；SQLite 忽略此参数）
+            "pool_recycle": 3600,
         },
     )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
@@ -159,7 +206,12 @@ def create_app() -> Flask:
 
     # 初始化扩展
     db.init_app(app)
-    
+
+    # 请求结束后强制关闭 session，将连接归还给连接池（防止连接泄漏）
+    @app.teardown_appcontext
+    def shutdown_session(exception=None):
+        db.session.remove()
+
     # 初始化定时任务（仅在非测试环境且主进程运行）
     if not app.config.get("TESTING"):
         _init_scheduler(app)

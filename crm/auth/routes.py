@@ -12,6 +12,7 @@ from flask import (
 )
 from werkzeug.security import check_password_hash
 
+from ..extensions import db
 from ..models import User
 
 auth_bp = Blueprint("auth", __name__)
@@ -21,7 +22,7 @@ auth_bp = Blueprint("auth", __name__)
 def load_logged_in_user():
     """每个请求前从 session 中加载当前用户。"""
     user_id = session.get("user_id")
-    g.current_user = User.query.get(user_id) if user_id else None
+    g.current_user = db.session.get(User, user_id) if user_id else None
 
 
 @auth_bp.route("/", methods=["GET", "POST"])
