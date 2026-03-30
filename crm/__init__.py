@@ -1,11 +1,59 @@
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 from datetime import timedelta
 
 from flask import Flask
 
 from .extensions import db
+
+
+def _setup_logging(app: Flask) -> None:
+    """配置日志滚动：单文件最大 10MB，保留 5 个历史文件。
+
+    格式：时间戳 | 日志级别 | 模块名 | 消息内容
+    超出 10MB 自动切换到下一个文件，最多保留 app.log ~ app.log.4（共5个）。
+    """
+
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "app.log")
+
+    # 避免多进程（gunicorn/uwsgi）下重复初始化
+    if getattr(app, "_logging_configured", False):
+        return
+    app._logging_configured = True
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # RotatingFileHandler：10MB 切分，保留 5 个备份
+    rotate_handler = logging.handlers.RotatingFileHandler(
+        filename=log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    rotate_handler.setLevel(logging.DEBUG)
+    rotate_handler.setFormatter(formatter)
+
+    # 同时输出到控制台（方便 systemd / docker logs 查看）
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(rotate_handler)
+    root_logger.addHandler(console_handler)
+
+    app.logger.info(
+        f"日志系统已初始化：{log_file}（最大 10MB/个，最多保留 5 个历史）"
+    )
 
 
 def _migrate_schema(app: Flask) -> None:
@@ -109,24 +157,27 @@ def create_app() -> Flask:
         "SQLALCHEMY_ENGINE_OPTIONS",
         {
             # 基础连接池大小
-            "pool_size": 20,
-            # 允许的额外连接数（超过 pool_size 后临时创建）
-            "max_overflow": 40,
+            "pool_size": 50,
+            # 允许的额外连接数（超过 pool_size 后临时创建，上限 pool_size + max_overflow）
+            "max_overflow": 100,
             # 在每次借出连接前执行 ping，防止“断开但池子不知情”的连接导致报错
             "pool_pre_ping": True,
-            # 定期回收连接，单位秒（这里为 30 分钟）
-            "pool_recycle": 1800,
+            # 定期回收连接，单位秒（1小时），防止数据库端断连导致连接失效
+            "pool_recycle": 3600,
+            # 连接池取用超时（秒），防止请求长时间阻塞在等待连接上
+            "pool_timeout": 30,
         },
     )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+    _setup_logging(app)
     
     # 邮件配置（QQ邮箱SMTP）
     app.config["MAIL_SERVER"] = "smtp.qq.com"
     app.config["MAIL_PORT"] = 587
     app.config["MAIL_USE_TLS"] = True
     # 使用环境变量或默认配置
-    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "afrunk@foxmail.com")
-    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "sgcwkqlwirfcdiij")
+    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "731085213@qq.com")
+    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "xtyzwtjvpiktbeah")
     app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
 
     # 初始化扩展

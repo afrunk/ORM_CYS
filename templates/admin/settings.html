@@ -23,7 +23,19 @@
     <div class="tab-pane fade show active" id="user-pane" role="tabpanel" aria-labelledby="user-tab">
       <div class="card">
         <div class="card-body">
-          <!-- 用户筛选器 -->
+          <!-- 桌面端：主操作在顶部（添加 / 删除选中行） -->
+          <div class="settings-user-toolbar d-none d-lg-flex">
+            <button type="button" class="btn-action primary" onclick="showAddUserModal()">
+              <i class="bi-plus"></i> 添加用户
+            </button>
+            <button type="button" class="btn-action danger" onclick="deleteSelectedUser()">
+              <i class="bi-trash"></i> 删除选中
+            </button>
+            <span class="settings-user-toolbar-hint text-muted">在表格中点击一行以选中，再点删除</span>
+          </div>
+
+          <!-- 筛选区（桌面 + 移动统一外框） -->
+          <div class="user-filter-panel">
           <form method="get" class="user-filter-bar">
             <div class="user-filter-group">
               <label>角色</label>
@@ -59,7 +71,13 @@
                 重置
               </a>
             </div>
+            <div class="user-filter-add-row d-lg-none">
+              <button type="button" class="btn-action primary btn-sm user-filter-add-btn" onclick="showAddUserModal()">
+                <i class="bi-plus"></i> 添加用户
+              </button>
+            </div>
           </form>
+          </div>
 
           <!-- 桌面端表格视图 -->
           <div class="data-table-wrapper d-none d-lg-block">
@@ -180,97 +198,68 @@
             </div>
           </div>
 
-          <!-- 移动端卡片视图 -->
-          <div class="user-cards d-lg-none">
+          <!-- 移动端卡片视图（紧凑布局） -->
+          <div class="user-cards user-cards-compact d-lg-none">
             {% for u in users %}
               {% set s = stats_map.get(u.id) %}
               {% set profile = u.sales_profile %}
-              <div class="user-card" data-user-id="{{ u.id }}" onclick="editUser({{ u.id }})">
+              <div class="user-card user-card-compact" data-user-id="{{ u.id }}">
                 <div class="user-card-header">
                   <div class="user-card-title">
                     <h4>{{ u.username }}</h4>
-                    <span class="user-id">ID: {{ u.id }}</span>
+                    <div class="user-card-meta-line">
+                      <span class="user-id-chip">ID {{ u.id }}</span>
+                      <code class="password-chip">{% if u.temp_password %}{{ u.temp_password }}{% elif u.username == 'superadmin' and u.role == 'super_admin' %}superadmin123{% else %}******{% endif %}</code>
+                    </div>
                   </div>
-                  <span class="role-badge role-{{ u.role }}">
-                    {% if u.role == 'super_admin' %}超级管理员
+                  <span class="role-badge role-{{ u.role }} role-badge-compact">
+                    {% if u.role == 'super_admin' %}超管
                     {% elif u.role == 'data_entry' %}数据员
                     {% elif u.role == 'operator' %}运营
-                    {% elif u.role == 'sales' %}销售代表
+                    {% elif u.role == 'sales' %}销售
                     {% else %}{{ u.role }}{% endif %}
                   </span>
                 </div>
                 <div class="user-card-body">
-                  <div class="user-info-row">
-                    <div class="info-item">
-                      <i class="bi-telephone"></i>
-                      <span>{{ u.phone or '未设置' }}</span>
-                    </div>
-                    <div class="info-item">
-                      <i class="bi-envelope"></i>
-                      <span>{{ u.email or '未设置' }}</span>
-                    </div>
+                  <div class="user-info-inline">
+                    <span class="user-info-inline-item"><i class="bi-telephone"></i>{{ u.phone or '—' }}</span>
+                    <span class="user-info-sep" aria-hidden="true">·</span>
+                    <span class="user-info-inline-item"><i class="bi-envelope"></i>{{ u.email or '—' }}</span>
                   </div>
                   {% if profile %}
-                  <div class="user-info-row">
-                    <div class="info-item">
-                      <i class="bi-geo-alt"></i>
-                      <span>{{ profile.service_region or '未设置' }}</span>
-                    </div>
-                    <div class="info-item">
-                      <i class="bi-sort-numeric-down"></i>
-                      <span>派单序号: {{ profile.dispatch_order }}</span>
-                    </div>
+                  <div class="user-info-inline user-info-inline-sub">
+                    <span><i class="bi-geo-alt"></i>{{ profile.service_region or '—' }}</span>
+                    <span class="user-info-sep">·</span>
+                    <span>序{{ profile.dispatch_order }}</span>
+                    <span class="user-info-sep">·</span>
+                    <span class="status-badge status-badge-inline {{ 'accepted' if profile.is_available else 'timeout' }}">{{ '在线' if profile.is_available else '离线' }}</span>
                   </div>
                   {% endif %}
-                  <div class="user-info-row">
-                    <div class="status-group" style="display: flex; flex-direction: column; gap: 0.25rem;">
-                      <div style="display: flex; gap: 0.5rem;">
-                        {% if profile %}
-                        <span class="status-badge {{ 'accepted' if profile.is_available else 'timeout' }}">
-                          {{ '可用' if profile.is_available else '不可用' }}
-                        </span>
-                        {% endif %}
-                        <span class="status-badge {{ 'accepted' if u.is_active else 'timeout' }}">
-                          {{ '启用' if u.is_active else '停用' }}
-                        </span>
-                      </div>
-                      <form method="post" action="{{ url_for('admin.user_toggle_active', user_id=u.id) }}">
-                        <button type="submit" class="btn-action btn-sm {{ 'danger' if u.is_active else 'primary' }}" style="width: 100%; max-width: 120px;">
-                          {{ '停用' if u.is_active else '启用' }}
-                        </button>
-                      </form>
-                    </div>
+                  <div class="user-card-status-line">
+                    <span class="status-badge {{ 'accepted' if u.is_active else 'timeout' }}">{{ '账户启用' if u.is_active else '已停用' }}</span>
                   </div>
                   {% if u.role == 'sales' %}
-                  <div class="performance-section">
-                    <div class="performance-item">
-                      <span class="label">接单数</span>
-                      <span class="value">{{ s.accepted if s else 0 }}</span>
-                    </div>
-                    <div class="performance-item">
-                      <span class="label">转化数</span>
-                      <span class="value">{{ s.converted if s else 0 }}</span>
-                    </div>
-                    <div class="performance-item">
-                      <span class="label">转化率</span>
-                      <span class="value">{{ s.rate if s else '-' }}</span>
-                    </div>
+                  <div class="performance-inline">
+                    接单 <strong>{{ s.accepted if s else 0 }}</strong>
+                    <span class="user-info-sep">·</span>
+                    转化 <strong>{{ s.converted if s else 0 }}</strong>
+                    <span class="user-info-sep">·</span>
+                    率 <strong>{{ s.rate if s else '—' }}</strong>
                   </div>
                   {% endif %}
-                </div>
-                <div class="user-card-footer">
-                  <code class="password-display">
-                    {% if u.temp_password %}
-                      {{ u.temp_password }}
-                    {% elif u.username == 'superadmin' and u.role == 'super_admin' %}
-                      superadmin123
-                    {% else %}
-                      ******
-                    {% endif %}
-                  </code>
-                  <button class="btn-action btn-sm" onclick="event.stopPropagation(); editUser({{ u.id }})">
-                    <i class="bi-pencil"></i> 编辑
-                  </button>
+                  <div class="user-card-actions-row" onclick="event.stopPropagation();">
+                    <button type="button" class="btn-action btn-sm primary user-card-action-btn" onclick="editUser({{ u.id }})">
+                      <i class="bi-pencil"></i> 编辑
+                    </button>
+                    <form method="post" action="{{ url_for('admin.user_toggle_active', user_id=u.id) }}" class="user-card-toggle-form">
+                      <button type="submit" class="btn-action btn-sm {{ 'outline-danger' if u.is_active else 'primary' }} user-card-action-btn">
+                        {{ '停用' if u.is_active else '启用' }}
+                      </button>
+                    </form>
+                    <button type="button" class="btn-action btn-sm outline-danger user-card-action-btn" onclick="deleteUserById({{ u.id }})">
+                      <i class="bi-trash"></i> 删除
+                    </button>
+                  </div>
                 </div>
               </div>
             {% else %}
@@ -280,16 +269,6 @@
               </div>
             {% endfor %}
           </div>
-
-          <!-- 操作按钮 -->
-          <div class="action-buttons mt-3">
-            <button class="btn-action primary" onclick="showAddUserModal()">
-              <i class="bi-plus"></i> 添加
-            </button>
-            <button class="btn-action danger" onclick="deleteSelectedUser()">
-              <i class="bi-trash"></i> 删除
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -298,6 +277,13 @@
     <div class="tab-pane fade" id="region-pane" role="tabpanel" aria-labelledby="region-tab">
       <div class="card">
         <div class="card-body">
+          <!-- 移动端顶部操作栏 -->
+          <div class="settings-top-bar settings-top-bar-regions d-lg-none">
+            <button class="btn-action primary btn-sm" onclick="showAddRegionModal()">
+              <i class="bi-plus"></i> 添加
+            </button>
+          </div>
+
           <div class="data-table-wrapper">
             <table class="data-table">
               <thead>
@@ -336,8 +322,8 @@
             </table>
           </div>
 
-          <!-- 操作按钮 -->
-          <div class="action-buttons mt-3">
+          <!-- 操作按钮（桌面端） -->
+          <div class="action-buttons mt-3 d-none d-lg-flex">
             <button class="btn-action primary" onclick="showAddRegionModal()">
               <i class="bi-plus"></i> 添加
             </button>
@@ -489,10 +475,10 @@ document.querySelectorAll('.data-table tbody tr[data-user-id]').forEach(row => {
   });
 });
 
-// 卡片点击选择（移动端）
+// 卡片点击选择（移动端；排除按钮、表单及图标子节点）
 document.querySelectorAll('.user-card[data-user-id]').forEach(card => {
   card.addEventListener('click', function(e) {
-    if (e.target.tagName === 'BUTTON') return;
+    if (e.target.closest('button, form, a, input, select, textarea')) return;
     document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
     this.classList.add('selected');
     selectedUserId = parseInt(this.dataset.userId);
@@ -663,6 +649,15 @@ function deleteSelectedUser() {
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = `/admin/users/${selectedUserId}/delete`;
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function deleteUserById(userId) {
+  if (!confirm('确定要删除此用户吗？删除后无法恢复，相关数据将被清理。')) return;
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `/admin/users/${userId}/delete`;
   document.body.appendChild(form);
   form.submit();
 }

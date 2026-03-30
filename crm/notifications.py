@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
+from typing import Optional
 
 from flask import current_app
 
 from .extensions import db
 from .models import Customer, Notification, User
+
+
+# SMTP 连接超时（秒）
+SMTP_TIMEOUT = 15
+# 最大重试次数
+MAX_RETRIES = 3
 
 
 def send_assignment_notification(sales: User, customer: Customer) -> None:
@@ -25,11 +33,27 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
     status = "sent"
     
     if sales.email:
-        try:
-            send_email_notification(sales, customer)
+        success = False
+        last_error = None
+        
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                send_email_notification(sales, customer)
+                success = True
+                break
+            except Exception as e:
+                last_error = e
+                current_app.logger.warning(
+                    f"[通知] 第 {attempt}/{MAX_RETRIES} 次邮件发送失败：{e}"
+                )
+                if attempt < MAX_RETRIES:
+                    import time
+                    time.sleep(2)  # 重试前等待2秒
+        
+        if success:
             status = "sent"
-        except Exception as e:
-            current_app.logger.error(f"发送邮件通知失败：{e}")
+        else:
+            current_app.logger.error(f"发送邮件通知失败（已重试 {MAX_RETRIES} 次）：{last_error}")
             status = "failed"
             channel = "email_failed"
     
@@ -207,13 +231,25 @@ def send_email_notification(sales: User, customer: Customer) -> None:
     html_part = MIMEText(html_content, 'html', 'utf-8')
     msg.attach(html_part)
     
-    # 发送邮件
+    # 发送邮件（带超时和错误处理）
     try:
-        server = smtplib.SMTP(app.config["MAIL_SERVER"], app.config["MAIL_PORT"])
+        server = smtplib.SMTP(
+            app.config["MAIL_SERVER"], 
+            app.config["MAIL_PORT"],
+            timeout=SMTP_TIMEOUT
+        )
         server.starttls()
         server.login(mail_username, mail_password)
         server.send_message(msg)
         server.quit()
+    except socket.timeout:
+        raise Exception(f"邮件发送超时（{SMTP_TIMEOUT}秒），请检查网络连接")
+    except smtplib.SMTPAuthError as e:
+        raise Exception(f"邮件认证失败，请检查邮箱账号和密码配置：{str(e)}")
+    except smtplib.SMTPRecipientsRefused as e:
+        raise Exception(f"收件人邮箱被拒绝：{sales.email}，请检查销售邮箱是否正确")
+    except smtplib.SMTPException as e:
+        raise Exception(f"SMTP协议错误：{str(e)}")
     except Exception as e:
         raise Exception(f"邮件发送失败：{str(e)}")
 

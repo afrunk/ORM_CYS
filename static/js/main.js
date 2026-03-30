@@ -1,4 +1,4 @@
-﻿document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", function () {
   // 左侧黑色侧边栏控制
   var sidebar = document.getElementById("sidebarMenu");
   var sidebarToggle = document.getElementById("sidebarToggle");
@@ -112,6 +112,10 @@
   // 确保所有操作按钮（如添加按钮）的点击不会打开侧边栏
   // 使用事件委托，确保动态添加的按钮也能生效
   document.addEventListener("click", function(e) {
+    // 勿拦截自定义确认弹层内的按钮（捕获阶段 stopPropagation 会导致「确定」收不到点击）
+    if (e.target.closest(".confirm-dialog-modal")) {
+      return;
+    }
     var currentIsMobile = window.innerWidth <= 768;
     // 检查点击的是否是操作按钮
     var btnAction = e.target.closest('.btn-action');

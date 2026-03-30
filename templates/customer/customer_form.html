@@ -57,8 +57,21 @@
             {% endif %}
           </div>
         </div>
-        <input type="hidden" name="sales_id" value="">
+        {# 隐藏字段：通过 JS 动态填充选中的销售ID #}
+        <input type="hidden" name="sales_id" id="hiddenSalesId" value="">
         <input type="hidden" name="operator_id" value="">
+        <div class="col-md-6" id="salesSelectWrapper" style="display:none;">
+          <div class="form-group">
+            <label>接单销售 <span style="color: #6b7280; font-size: 0.75rem;">（可选）</span></label>
+            <select id="salesSelect" class="form-control">
+              <option value="">请先选择地区</option>
+            </select>
+            <small id="salesHint" style="color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem; display: block;"></small>
+            <small id="dispatchStatusHint" class="text-muted" style="font-size: 0.75rem; margin-top: 0.35rem; display: block;">
+              默认由<strong>系统派单</strong>；在下拉框里选中某位销售后，将变为<strong>指定派单</strong>给该人。
+            </small>
+          </div>
+        </div>
         <div class="col-md-6">
           <div class="form-group">
             <label>客户图片</label>
@@ -99,6 +112,98 @@
 </div>
 
 <script>
+// 默认系统派单；仅在下拉框选中具体销售时视为指定派单（与后端 sales_id 一致）
+document.addEventListener('DOMContentLoaded', function() {
+  const regionSelect = document.getElementById('customerRegion');
+  const salesWrapper = document.getElementById('salesSelectWrapper');
+  const salesSelect = document.getElementById('salesSelect');
+  const hiddenSalesId = document.getElementById('hiddenSalesId');
+  const salesHint = document.getElementById('salesHint');
+  const statusHint = document.getElementById('dispatchStatusHint');
+  {% if not is_edit %}
+  var _salesApiPattern = {{ url_for('customer.api_sales_by_region', region='__R__') | tojson }};
+  function salesApiUrl(region) {
+    return _salesApiPattern.replace('__R__', encodeURIComponent(region));
+  }
+  {% endif %}
+
+  {% if is_edit %}
+  if (salesWrapper) salesWrapper.style.display = 'none';
+  {% endif %}
+
+  function syncDispatchHint() {
+    if (!statusHint || !salesSelect) return;
+    var v = salesSelect.value;
+    if (v) {
+      var name = salesSelect.options[salesSelect.selectedIndex] ? salesSelect.options[salesSelect.selectedIndex].text : '';
+      statusHint.innerHTML = '当前为<strong>指定派单</strong> → <span style="color:#0d9488;">' + name + '</span>';
+    } else {
+      statusHint.innerHTML = '当前为<strong>系统派单</strong>（未指定销售时由系统自动分配）。';
+    }
+  }
+
+  function onRegionChange() {
+    {% if is_edit %}
+    return;
+    {% endif %}
+    var region = regionSelect ? regionSelect.value : '';
+    if (!region) {
+      salesWrapper.style.display = 'none';
+      salesSelect.innerHTML = '<option value="">请先选择地区</option>';
+      hiddenSalesId.value = '';
+      salesHint.textContent = '';
+      syncDispatchHint();
+      return;
+    }
+    salesWrapper.style.display = 'block';
+    loadSalesByRegion(region);
+  }
+
+  function loadSalesByRegion(region) {
+    salesSelect.innerHTML = '<option value="">加载中…</option>';
+    salesHint.textContent = '';
+    hiddenSalesId.value = '';
+
+    fetch(salesApiUrl(region), { credentials: 'same-origin' })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        if (data.success && data.sales.length > 0) {
+          var opts = ['<option value="">不指定（系统派单）</option>'];
+          data.sales.forEach(function(s) {
+            opts.push('<option value="' + s.id + '">' + s.username + '</option>');
+          });
+          salesSelect.innerHTML = opts.join('');
+          salesHint.textContent = '该地区当前 ' + data.sales.length + ' 名在线可用销售（需在后台配置服务地区为「' + region + '」且账号启用、销售在线）';
+        } else if (data.success && data.sales.length === 0) {
+          salesSelect.innerHTML = '<option value="">不指定（系统派单）</option>';
+          salesHint.textContent = '该地区暂无「在线且服务地区一致」的销售；将走系统派单。请到用户管理里为该销售设置服务地区为「' + region + '」并设为在线。';
+        }
+        syncDispatchHint();
+      })
+      .catch(function(err) {
+        salesSelect.innerHTML = '<option value="">加载失败</option>';
+        salesHint.textContent = '接口请求失败：' + (err && err.message ? err.message : '请检查网络或联系管理员');
+      });
+  }
+
+  if (regionSelect) {
+    regionSelect.addEventListener('change', onRegionChange);
+  }
+  if (salesSelect) {
+    salesSelect.addEventListener('change', function() {
+      hiddenSalesId.value = salesSelect.value || '';
+      syncDispatchHint();
+    });
+  }
+
+  {% if not is_edit %}
+  onRegionChange();
+  {% endif %}
+});
+
 // 表单提交调试信息
 document.addEventListener('DOMContentLoaded', function() {
   const form = document.querySelector('form[method="post"]');

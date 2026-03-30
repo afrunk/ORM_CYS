@@ -5,7 +5,7 @@
 {% block page_title %}客户列表{% endblock %}
 
 {% block body %}
-<div class="page-content">
+<div class="page-content customer-list-page">
   {% set active_tab = request.args.get('tab', 'list') %}
 
   {% if current_user.role in ['super_admin', 'data_entry'] %}
@@ -193,7 +193,6 @@
               {% else %}
               <a class="pagination-page" href="{{ url_for('customer.customer_list', **page_params) }}">{{ page_num }}</a>
               {% endif %}
-            {% else %}
               <span class="pagination-ellipsis">…</span>
             {% endif %}
           {% endfor %}
@@ -207,20 +206,19 @@
           {% else %}
           tabindex="-1"
           {% endif %}
-        >下一页</a>
+          >下一页</a>
       </div>
     </div>
     {% endif %}
-
     {% else %}
     <div class="empty-state" style="padding: 3rem 1rem; text-align: center;">
       <div class="empty-state-icon">✅</div>
       <p class="empty-state-text">暂无待分配客户</p>
     </div>
     {% endif %}
-  </div>
+  {% endif %}
 
-  {% elif active_tab == 'dispatch' and current_user.role in ['super_admin', 'data_entry'] %}
+  {% if active_tab == 'dispatch' and current_user.role in ['super_admin', 'data_entry'] %}
   <!-- 派单方式 Tab 内容（仅超级管理员 / 数据员） -->
   <div class="dispatch-settings-card">
     <div class="dispatch-settings-header">
@@ -263,73 +261,78 @@
       </form>
     </div>
   </div>
-
-  {% else %}
-
-  <!-- 顶部操作区：添加按钮 + 统计卡片 -->
+  {% endif %}
   {% if current_user.role != 'sales' %}
-  <div class="page-header-summary-row">
-  <div class="page-header">
-    <a href="{{ url_for('customer.customer_create') }}" class="btn-action primary">
-      <i class="bi-plus"></i> 添加
-    </a>
-    </div>
-    <div class="page-summary-row">
-      {% if current_user.role in ['super_admin', 'data_entry'] and next_sales_by_region %}
-      <div class="summary-card next-sales-card">
-        <div class="summary-card-label">各地区下一位待派销售</div>
-        <div class="next-sales-list">
-          {% for item in next_sales_by_region %}
-          <div class="next-sales-item">
-            <span class="next-sales-region">{{ item.region }}</span>
-            <span class="next-sales-sep">→</span>
-            <span class="next-sales-name">{{ item.username }}</span>
-            {% if item.dispatch_order %}
-            <span class="next-sales-order">序号 {{ item.dispatch_order }}</span>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </div>
-      </div>
+  <!-- 客户列表顶部区域：左侧按钮 + 右侧统计卡片 -->
+  <div class="cl-top-bar">
+    <div class="cl-top-bar-left">
+      {% if current_user.role != 'sales' %}
+      <a href="{{ url_for('customer.customer_create') }}" class="btn-action primary">
+        <i class="bi-plus"></i> 添加
+      </a>
       {% endif %}
-
-      <div class="summary-card" id="todayCreatedSummary">
-        <div class="summary-card-label">当日新增客户</div>
-        <div class="summary-card-value" id="todayCreatedCount">--</div>
-        <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
-      </div>
-      
-      <!-- 地区统计和个人统计 -->
-      <div class="summary-card" id="regionStatsSummary" style="min-width: 300px;">
-        <div class="summary-card-label">地区新增统计</div>
-        <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
-          <div style="color: #9ca3af;">加载中...</div>
+    </div>
+    <div class="cl-top-bar-right">
+      <div class="page-summary-row">
+        {% if current_user.role in ['super_admin', 'data_entry'] and next_sales_by_region %}
+        <div class="summary-card next-sales-card">
+          <div class="summary-card-label">各地区下一位待派销售</div>
+          <div class="next-sales-list">
+            {% for item in next_sales_by_region %}
+            <div class="next-sales-item">
+              <span class="next-sales-region">{{ item.region }}</span>
+              <span class="next-sales-sep">→</span>
+              <span class="next-sales-name">{{ item.username }}</span>
+              {% if item.dispatch_order %}
+              <span class="next-sales-order">序号 {{ item.dispatch_order }}</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
         </div>
-        <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
-          <span id="personalStatsLabel" style="font-weight: 600;"></span>
-          <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
+        {% endif %}
+
+        <div class="summary-card" id="todayCreatedSummary">
+          <div class="summary-card-label">当日新增客户</div>
+          <div class="summary-card-value" id="todayCreatedCount">--</div>
+          <div class="summary-card-meta">统计时间：当日 0:00 至 当前</div>
+        </div>
+
+        <div class="summary-card" id="regionStatsSummary">
+          <div class="summary-card-label">地区新增统计</div>
+          <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
+            <div style="color: #9ca3af;">加载中...</div>
+          </div>
+          <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
+            <span id="personalStatsLabel" style="font-weight: 600;"></span>
+            <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
+          </div>
         </div>
       </div>
     </div>
   </div>
   {% else %}
   <!-- 销售角色：仅显示统计卡片 -->
-  <div class="page-summary-row">
-    <div class="summary-card" id="todayCreatedSummary">
-      <div class="summary-card-label">当日新增客户</div>
-      <div class="summary-card-value" id="todayCreatedCount">--</div>
-      <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
-    </div>
-    
-    <!-- 地区统计和个人统计 -->
-    <div class="summary-card" id="regionStatsSummary" style="min-width: 300px;">
-      <div class="summary-card-label">地区新增统计</div>
-      <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
-        <div style="color: #9ca3af;">加载中...</div>
-      </div>
-      <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
-        <span id="personalStatsLabel" style="font-weight: 600;"></span>
-        <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
+  <div class="cl-top-bar">
+    <div class="cl-top-bar-left"></div>
+    <div class="cl-top-bar-right">
+      <div class="page-summary-row">
+        <div class="summary-card" id="todayCreatedSummary">
+          <div class="summary-card-label">当日新增客户</div>
+          <div class="summary-card-value" id="todayCreatedCount">--</div>
+          <div class="summary-card-meta">统计时间：当日 0:00 至 当前</div>
+        </div>
+
+        <div class="summary-card" id="regionStatsSummary">
+          <div class="summary-card-label">地区新增统计</div>
+          <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
+            <div style="color: #9ca3af;">加载中...</div>
+          </div>
+          <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
+            <span id="personalStatsLabel" style="font-weight: 600;"></span>
+            <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -550,7 +553,9 @@
       </thead>
       <tbody>
         {% for c in customers %}
-        <tr data-customer-id="{{ c.id }}" onclick="onCustomerRowClick({{ c.id }}, this)">
+        {% set can_edit_customer = current_user.is_super_admin() or current_user.role in ['data_entry', 'operator'] %}
+        {% set can_delete_customer = current_user.is_super_admin() or current_user.role in ['data_entry', 'operator'] %}
+        <tr class="customer-row-selectable" data-customer-id="{{ c.id }}">
           {# 序号按最新在前的排序倒序编号 #}
           <td>{{ pagination.total - (pagination.page - 1) * per_page - loop.index0 }}</td>
           <td>{{ c.id }}</td>
@@ -679,9 +684,21 @@
             </form>
             {% endif %}
               {% if current_user.role in ['super_admin', 'data_entry', 'operator'] and c.dispatcher_id is none and c.status == 'pending' and c.sales_id %}
-              <form method="post" action="{{ url_for('customer.release_to_public_pool', customer_id=c.id) }}" style="display: inline; margin: 0;" onsubmit="return confirm('确定要将此客户释放到公海吗？');">
+              <form method="post" action="{{ url_for('customer.release_to_public_pool', customer_id=c.id) }}" class="js-confirm-form" style="display: inline; margin: 0;" data-confirm="确定要将此客户释放到公海吗？">
                 <button type="submit" class="btn-action" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background-color: #f59e0b; color: white; border-color: #f59e0b; white-space: nowrap;">
                   释放
+                </button>
+              </form>
+              {% endif %}
+              {% if can_edit_customer %}
+              <a href="{{ url_for('customer.customer_edit', customer_id=c.id) }}" class="btn-action" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap; text-decoration: none;">
+                编辑
+              </a>
+              {% endif %}
+              {% if can_delete_customer %}
+              <form method="post" action="{{ url_for('customer.customer_delete', customer_id=c.id) }}" class="js-confirm-form" style="display: inline; margin: 0;" data-confirm="确定要删除此客户吗？删除后无法恢复，相关数据将被清理。">
+                <button type="submit" class="btn-action danger" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap;">
+                  删除
                 </button>
               </form>
               {% endif %}
@@ -732,7 +749,6 @@
             {% else %}
             <a class="pagination-page" href="{{ url_for('customer.customer_list', **page_params) }}">{{ page_num }}</a>
             {% endif %}
-          {% else %}
             <span class="pagination-ellipsis">…</span>
           {% endif %}
         {% endfor %}
@@ -751,43 +767,20 @@
     </div>
   </div>
   {% endif %}
-  <!-- 操作按钮 -->
-  <div class="action-buttons">
-    <button id="editCustomerBtn" type="button" class="btn-action" onclick="handleEditButtonClick(event)">
-      <i class="bi-pencil"></i> 修改
-    </button>
-    <button id="deleteCustomerBtn" type="button" class="btn-action danger" onclick="handleDeleteButtonClick(event)">
-      <i class="bi-trash"></i> 删除
-    </button>
+</div>
+
+<div id="confirmActionModal" class="confirm-dialog-modal" role="dialog" aria-modal="true" aria-labelledby="confirmActionTitle" aria-describedby="confirmActionMessage" aria-hidden="true">
+  <div class="confirm-dialog-panel">
+    <h3 id="confirmActionTitle" class="confirm-dialog-title">请确认</h3>
+    <p id="confirmActionMessage" class="confirm-dialog-message"></p>
+    <div class="confirm-dialog-actions">
+      <button type="button" class="btn-action confirm-dialog-btn-cancel" id="confirmActionCancel">取消</button>
+      <button type="button" class="btn-action danger confirm-dialog-btn-ok" id="confirmActionOk">确定</button>
+    </div>
   </div>
-  {% endif %}
 </div>
 
 <script>
-let selectedCustomerId = null;
-
-function editSelectedCustomer() {
-  if (!selectedCustomerId) {
-    alert('请先选择要编辑的客户');
-    return;
-  }
-  console.log('Navigating to edit page for customer:', selectedCustomerId);
-  window.location.href = `/customers/${selectedCustomerId}/edit`;
-}
-
-function deleteSelectedCustomer() {
-  if (!selectedCustomerId) {
-    alert('请先选择要删除的客户');
-    return;
-  }
-  if (!confirm('确定要删除此客户吗？删除后无法恢复，相关数据将被清理。')) return;
-  
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = `/customers/${selectedCustomerId}/delete`;
-  document.body.appendChild(form);
-  form.submit();
-}
 
 function resetFilters() {
   document.getElementById('filterForm').reset();
@@ -795,16 +788,7 @@ function resetFilters() {
   location.href = '{{ url_for("customer.customer_list") }}';
 }
 
-// 选中某一行客户（仅高亮 + 记录 ID，不再自动跳转编辑页）
-function onCustomerRowClick(id, rowEl) {
-  document.querySelectorAll('.data-table tbody tr').forEach(r => r.classList.remove('selected'));
-  if (rowEl) {
-    rowEl.classList.add('selected');
-  }
-  selectedCustomerId = id;
-  console.log('Selected customer row (inline):', selectedCustomerId);
-  // 如需进入编辑，请点击上方“修改”按钮或操作列里的“查看”链接
-}
+// 行选中已移除，改用每行操作列的编辑/删除按钮
 
 // 更新筛选标题（全部/筛选的）
 function updateFilterTitle() {
@@ -840,17 +824,61 @@ document.addEventListener('DOMContentLoaded', function () {
 
   initImagePreview();
   initSalesAvailabilityToggle();
+  initConfirmActionModal();
 });
 
-// 明确调试按钮是否收到点击
-function handleEditButtonClick(event) {
-  console.log('Edit button raw click', event.type);
-  editSelectedCustomer();
-}
+function initConfirmActionModal() {
+  const modal = document.getElementById('confirmActionModal');
+  const messageEl = document.getElementById('confirmActionMessage');
+  const btnOk = document.getElementById('confirmActionOk');
+  const btnCancel = document.getElementById('confirmActionCancel');
+  if (!modal || !messageEl || !btnOk || !btnCancel) return;
 
-function handleDeleteButtonClick(event) {
-  console.log('Delete button raw click', event.type);
-  deleteSelectedCustomer();
+  let pendingForm = null;
+
+  function openModal(form) {
+    const text = form.getAttribute('data-confirm');
+    if (!text) return false;
+    pendingForm = form;
+    messageEl.textContent = text;
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('confirm-dialog-open');
+    btnOk.focus();
+    return true;
+  }
+
+  function closeModal() {
+    pendingForm = null;
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('confirm-dialog-open');
+  }
+
+  document.querySelectorAll('form.js-confirm-form[data-confirm]').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      openModal(form);
+    });
+  });
+
+  btnCancel.addEventListener('click', closeModal);
+  modal.addEventListener('click', function (e) {
+    if (e.target === modal) closeModal();
+  });
+  btnOk.addEventListener('click', function () {
+    if (pendingForm) {
+      const f = pendingForm;
+      closeModal();
+      f.submit();
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && modal.classList.contains('is-open')) {
+      e.preventDefault();
+      closeModal();
+    }
+  });
 }
 
 async function refreshTodayCreatedCount() {

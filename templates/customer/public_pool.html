@@ -5,11 +5,18 @@
 {% block page_title %}公海客户{% endblock %}
 
 {% block body %}
-<div class="page-content">
+<div class="page-content public-pool-page">
+
+  <!-- 操作按钮（置顶，移动端无需先滚过表格） -->
+  <div class="action-buttons public-pool-actions">
+    <button class="btn-action primary" type="button" onclick="location.href='{{ url_for('customer.customer_create') }}'">
+      <i class="bi-plus"></i> 添加
+    </button>
+  </div>
 
   <!-- 数据表格 -->
-  <div class="data-table-wrapper">
-    <table class="data-table">
+  <div class="data-table-wrapper public-pool-table-wrap">
+    <table class="data-table public-pool-table">
       <thead>
         <tr>
           <th>图片</th>
@@ -23,8 +30,8 @@
       </thead>
       <tbody>
         {% for c in customers %}
-        <tr>
-          <td>
+        <tr class="public-pool-row">
+          <td data-label="图片">
             {% if c.image_path %}
             {% set thumb_path = thumbnail_map.get(c.id) %}
             {% set preview_path = preview_map.get(c.id) %}
@@ -51,20 +58,35 @@
             <span style="color: #9ca3af;">-</span>
             {% endif %}
           </td>
-          <td>{{ c.id }}</td>
-          <td>{{ c.name }}</td>
-          <td>{{ c.phone or '-' }}</td>
-          <td>{{ c.region or '-' }}</td>
-          <td>{{ c.remark or '-' }}</td>
-          <td>
+          <td data-label="客户ID"><span class="public-pool-cell-value">{{ c.id }}</span></td>
+          <td data-label="姓名"><span class="public-pool-cell-value">{{ c.name }}</span></td>
+          <td data-label="联系方式"><span class="public-pool-cell-value">{{ c.phone or '-' }}</span></td>
+          <td data-label="地区"><span class="public-pool-cell-value">{{ c.region or '-' }}</span></td>
+          <td data-label="备注信息">
+            {% if c.remark %}
+            <details class="public-pool-remark-details">
+              <summary class="public-pool-remark-summary">
+                <span class="public-pool-remark-summary-inner">
+                  <span class="public-pool-remark-label-collapsed">查看备注</span>
+                  <span class="public-pool-remark-label-expanded">收起备注</span>
+                </span>
+                <i class="bi bi-chevron-down public-pool-remark-chevron" aria-hidden="true"></i>
+              </summary>
+              <div class="public-pool-remark-body">{{ c.remark }}</div>
+            </details>
+            {% else %}
+            <span class="public-pool-cell-value">-</span>
+            {% endif %}
+          </td>
+          <td data-label="操作">
             {% if current_user.role in ['operator', 'super_admin'] %}
               {% if sales_users %}
               <form
                 method="post"
                 action="{{ url_for('customer.public_pool_assign', customer_id=c.id) }}"
-                style="display: flex; gap: 0.5rem; align-items: center;"
+                class="public-pool-assign-form"
               >
-                <select name="sales_id" class="form-control" style="width: auto; min-width: 150px;" required>
+                <select name="sales_id" class="form-control public-pool-sales-select" required>
                   <option value="">选择在线销售</option>
                   {% for s in sales_users %}
                   <option value="{{ s.id }}">
@@ -72,7 +94,7 @@
                   </option>
                   {% endfor %}
                 </select>
-                <button type="submit" class="btn-action primary" style="padding: 0.5rem 1rem;">接单</button>
+                <button type="submit" class="btn-action primary public-pool-submit-btn">接单</button>
               </form>
               {% else %}
               <span style="color: #9ca3af;">暂无在线销售</span>
@@ -83,9 +105,9 @@
               <form
                 method="post"
                 action="{{ url_for('customer.public_pool_claim', customer_id=c.id) }}"
-                style="display: inline-flex; gap: 0.5rem; align-items: center;"
+                class="public-pool-claim-form"
               >
-                <button type="submit" class="btn-action primary" style="padding: 0.4rem 0.8rem;">立即领取</button>
+                <button type="submit" class="btn-action primary public-pool-submit-btn">立即领取</button>
               </form>
               {% else %}
               <span style="color: #9ca3af;">请先在客户列表页切换为“在线”</span>
@@ -96,7 +118,7 @@
           </td>
         </tr>
         {% else %}
-        <tr>
+        <tr class="public-pool-empty-row">
           <td colspan="7" class="empty-state">
             <div class="empty-state-icon">📋</div>
             <p class="empty-state-text">暂无数据显示</p>
@@ -105,13 +127,6 @@
         {% endfor %}
       </tbody>
     </table>
-  </div>
-
-  <!-- 操作按钮 -->
-  <div class="action-buttons">
-    <button class="btn-action primary" onclick="location.href='{{ url_for('customer.customer_create') }}'">
-      <i class="bi-plus"></i> 添加
-    </button>
   </div>
 </div>
 {% endblock %}

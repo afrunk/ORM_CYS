@@ -19,9 +19,13 @@ auth_bp = Blueprint("auth", __name__)
 
 @auth_bp.before_app_request
 def load_logged_in_user():
-    """每个请求前从 session 中加载当前用户。"""
+    """每个请求前从 session 中加载当前用户（只读查询）。"""
     user_id = session.get("user_id")
-    g.current_user = User.query.get(user_id) if user_id else None
+    if user_id:
+        from ..extensions import db
+        g.current_user = db.session.get(User, user_id)
+    else:
+        g.current_user = None
 
 
 @auth_bp.route("/", methods=["GET", "POST"])

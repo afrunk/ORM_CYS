@@ -507,7 +507,7 @@ def _apply_customer_filters(query, current_user: User):
     # 如果指定了快捷 preset，则优先按快捷时间计算（忽略手动时间输入）
     if preset:
         if preset == "today":
-            # “今天”按业务定义的班次窗口：前一日18:00~当前18:00，或当前18:00~次日18:00（北京时区）
+            # # “今天”按自然日统计（北京时区 0:00~23:59:59）
             start_dt, end_dt = get_shift_window_utc(now_utc=now)
         elif preset == "yesterday":
             start_dt, end_dt = get_yesterday_window_utc(now)
@@ -538,7 +538,7 @@ def _apply_customer_filters(query, current_user: User):
             )
             return query
 
-    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（最近一个18:00~现在，北京时间）
+    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（当天 0:00~23:59:59，北京时间）
     if not start_date and not end_date and not start and not end and not preset:
         start_dt, end_dt = get_shift_window_utc()
         # 对于已分配的客户，按派单时间筛选；对于未分配的客户，按创建时间筛选
@@ -846,7 +846,7 @@ def customer_list():
 @customer_bp.route("/summary/today-created-count")
 @login_required
 def today_created_count():
-    """返回当前时间窗口内（最近一个18:00~现在）的新增客户总量（按 created_at）。
+    """返回当前自然日内（当天 0:00~23:59:59 北京时间）的新增客户总量（按 created_at）。
 
     说明：
     - 这里统计的是「系统内所有客户」的新增数量
@@ -997,6 +997,34 @@ def update_sales_availability():
     )
 
 
+@customer_bp.route("/api/sales_by_region/<region>")
+@login_required
+def api_sales_by_region(region: str):
+    """返回指定地区下所有可用的销售（用于录入表单动态加载）。"""
+    from sqlalchemy import func
+
+    from ..models import SalesProfile, User
+
+    region_key = (region or "").strip()
+    # 仅角色为 sales、账号启用、在线、且服务地区与所选地区一致（trim 后比较，避免空格导致匹配失败）
+    profiles = (
+        SalesProfile.query.join(User, SalesProfile.user_id == User.id)
+        .filter(
+            User.role == "sales",
+            User.is_active.is_(True),
+            SalesProfile.is_available.is_(True),
+            func.trim(SalesProfile.service_region) == region_key,
+        )
+        .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
+        .all()
+    )
+    sales_list = [
+        {"id": p.user.id, "username": p.user.username}
+        for p in profiles
+    ]
+    return jsonify({"success": True, "region": region, "sales": sales_list})
+
+
 @customer_bp.route("/create", methods=["GET", "POST"])
 @login_required
 def customer_create():
@@ -1012,13 +1040,14 @@ def customer_create():
         sales_id = request.form.get("sales_id", type=int)
         operator_id = request.form.get("operator_id", type=int)
 
-        # 运营只能录入，不能派单：禁止指定销售，名称可空，但必须有联系方式和地区
+        # 运营录入：可选择系统派单或手动指定销售
         if current.role == "operator":
-            sales_id = None
             operator_id = current.id
             if not phone or not region:
                 flash("运营录入客户时必须填写联系方式和地区。", "danger")
                 return redirect(url_for("customer.customer_create"))
+            # 若选择了手动指定派单，则使用 sales_id（后端会校验该销售是否属于该地区）
+            # 若选择自动派单，sales_id 为 None，交由系统派单逻辑处理
         else:
             # 其他角色：仍建议填写姓名
             if not name:
@@ -1088,18 +1117,34 @@ def customer_create():
 
         assigned_sales = None
 
-        # 超级管理员 / 数据员可以手动指定销售，视为“手动派单”
-        from ..models import SystemConfig
+        # 超级管理员 / 数据员 / 运营可以选择手动指定销售
+        # 手动指定时必须校验该销售是否属于该地区
+        from ..models import SystemConfig, SalesProfile
         system_dispatch_enabled = SystemConfig.get_bool("system_dispatch_enabled", default=False)
 
-        if sales_id and current.role in ("super_admin", "data_entry"):
+        if sales_id:
             assigned_sales = User.query.get(sales_id)
-        if assigned_sales:
-            customer.sales_id = assigned_sales.id
-            customer.dispatcher_id = current.id
-            customer.dispatch_time = datetime.utcnow()
-            customer.status = "pending"
-            _prepend_remark(customer, f"[系统] 手动派单给 {assigned_sales.username}")
+            if assigned_sales:
+                if assigned_sales.role != "sales":
+                    flash("只能指定角色为「销售」的用户接单。", "danger")
+                    return redirect(url_for("customer.customer_create"))
+                # 校验该销售是否服务该地区（strip 比较，与列表接口一致）
+                profile = SalesProfile.query.filter_by(user_id=sales_id).first()
+                pr = (profile.service_region or "").strip() if profile else ""
+                reg = (region or "").strip()
+                if profile and pr != reg:
+                    flash(f"所选销售（{assigned_sales.username}）的服务地区为「{profile.service_region}」，与客户地区「{region}」不匹配，无法指定派单。", "danger")
+                    return redirect(url_for("customer.customer_create"))
+                if profile and not profile.is_available:
+                    flash(f"所选销售（{assigned_sales.username}）当前不可用，无法指定派单。", "danger")
+                    return redirect(url_for("customer.customer_create"))
+            # 手动指定派单 → 直接分配给该销售
+            if assigned_sales:
+                customer.sales_id = assigned_sales.id
+                customer.dispatcher_id = current.id
+                customer.dispatch_time = datetime.utcnow()
+                customer.status = "pending"
+                _prepend_remark(customer, f"[手动] 指定派单给 {assigned_sales.username}")
         elif system_dispatch_enabled:
             # 系统派单开启：先保存为未分配，稍后统一通过自动派单服务处理
             pass
