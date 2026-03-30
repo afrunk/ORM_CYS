@@ -109,19 +109,16 @@ document.addEventListener("DOMContentLoaded", function () {
     closeSidebar();
   }
 
-  // 确保所有操作按钮（如添加按钮）的点击不会打开侧边栏
-  // 使用事件委托，确保动态添加的按钮也能生效
-  document.addEventListener("click", function(e) {
-    // 勿拦截自定义确认弹层内的按钮（捕获阶段 stopPropagation 会导致「确定」收不到点击）
+  // 移动端：若侧边栏仍打开，点击页面上的操作按钮时顺带收起侧边栏。
+  // 注意：绝不能在 document 捕获阶段对 .btn-action 调用 stopPropagation，
+  // 否则会拦截事件向下传递，导致按钮上的 onclick / 表单 submit 完全不触发（表现为「点了没反应」）。
+  document.addEventListener("click", function (e) {
     if (e.target.closest(".confirm-dialog-modal")) {
       return;
     }
     var currentIsMobile = window.innerWidth <= 768;
-    // 检查点击的是否是操作按钮
-    var btnAction = e.target.closest('.btn-action');
+    var btnAction = e.target.closest(".btn-action");
     if (btnAction && currentIsMobile && sidebarManuallyClosed) {
-      e.stopPropagation();
-      // 如果侧边栏已手动关闭，确保点击按钮时不会打开
       if (sidebar && !sidebar.classList.contains("collapsed")) {
         closeSidebar();
       }

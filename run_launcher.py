@@ -24,10 +24,12 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 # ============ 配置 ============
-HOST = "0.0.0.0"
+HOST = "0.0.0.0"  # Flask 绑定（监听所有网卡）
 PORT = 5000
-CHECK_INTERVAL = 30          # 健康检查间隔（秒）
-HEALTH_ENDPOINT = f"http://{HOST}:{PORT}/login"  # 使用登录页作为存活检查
+# 健康检查、端口探测用本机回环；不要用 0.0.0.0 作为 TCP/HTTP 客户端目标
+HEALTH_CHECK_HOST = "127.0.0.1"
+CHECK_INTERVAL = 120          # 健康检查间隔（秒）
+HEALTH_ENDPOINT = f"http://{HEALTH_CHECK_HOST}:{PORT}/login"  # 登录页存活检查
 KILL_WAIT = 3               # 杀掉进程后等待秒数再重启
 LAUNCHER_LOG = os.path.join(os.path.dirname(__file__), "logs", "launcher.log")
 
@@ -141,7 +143,7 @@ def _wait_until_ready(logger: logging.Logger, timeout: int = 30) -> bool:
     """等待服务端口就绪。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _is_port_open(HOST, PORT):
+        if _is_port_open(HEALTH_CHECK_HOST, PORT):
             time.sleep(1)  # 稍微等一下确保完全就绪
             return True
         time.sleep(1)
@@ -178,7 +180,7 @@ def main() -> None:
             logger.info(f"重启次数: {restart_count}")
             continue
 
-        if not _is_port_open(HOST, PORT):
+        if not _is_port_open(HEALTH_CHECK_HOST, PORT):
             logger.warning("端口 %s 未监听，Flask 可能已崩溃，准备重启", PORT)
             proc = None
             restart_count += 1

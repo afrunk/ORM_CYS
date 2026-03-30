@@ -27,5 +27,5 @@ app = create_flask_app()
 
 if __name__ == "__main__":
     # 对外开放 8000 端口
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=8000, debug=False)
 

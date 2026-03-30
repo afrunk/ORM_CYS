@@ -67,7 +67,9 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
   top: 0;
   left: 0;
   width: 220px; /* 进一步优化为220px，更紧凑 */
+  /* 100vh 在移动端常大于实际可视区，底部易被裁切；dvh 随地址栏伸缩更贴合可视区域 */
   height: 100vh;
+  height: 100dvh;
   background: #343a40;
   box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
   z-index: 1040;
@@ -76,6 +78,7 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0; /* 允许列方向 flex 子项正确收缩并内部滚动 */
 }
 
 .sidebar-dark.collapsed {
@@ -90,6 +93,7 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
   align-items: center;
   justify-content: space-between;
   background: #2c3e50;
+  flex-shrink: 0;
 }
 
 .sidebar-brand {
@@ -171,8 +175,11 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
 
 /* 侧边栏导航 */
 .sidebar-nav {
-  flex: 1;
+  flex: 1 1 auto;
+  /* 关键：默认 min-height:auto 会按内容撑开，导致整列超出 100vh，底部 footer 被父级 overflow:hidden 裁掉 */
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 0.75rem 0; /* 从1rem减小到0.75rem */
 }
 
@@ -248,8 +255,10 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
 /* 侧边栏底部 */
 .sidebar-footer {
   padding: 1.25rem; /* 从1.5rem减小到1.25rem */
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom, 0px));
   border-top: 1px solid #495057;
   background: #2c3e50;
+  flex-shrink: 0;
 }
 
 .sidebar-user {
@@ -328,6 +337,8 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
   z-index: 1039;
   opacity: 0;
   visibility: hidden;
+  /* 未显示时必须不接收触摸/点击，避免部分移动浏览器仍拦截下层按钮（偶发「点了没反应」） */
+  pointer-events: none;
   transition: all 0.3s ease;
   display: none; /* 桌面端默认隐藏 */
 }
@@ -340,6 +351,7 @@ body:has(.sidebar-dark:not(.collapsed)) .sidebar-toggle-btn {
   .sidebar-backdrop.active {
     opacity: 1;
     visibility: visible;
+    pointer-events: auto;
   }
   
   /* 移动端侧边栏收起时，内容区域占满全宽 */
@@ -2480,7 +2492,9 @@ h6, .h6 {
   }
 
   .sidebar-footer {
-    padding: 1.25rem;
+    /* 勿用单一 padding 值覆盖底部安全区，否则「退出登录」易被系统手势条挡住 */
+    padding: 1rem 1.25rem;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }
 
   /* 移动端内容区域不需要左边距 */

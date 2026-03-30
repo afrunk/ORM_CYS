@@ -57,13 +57,19 @@ def _setup_logging(app: Flask) -> None:
 
 
 def _migrate_schema(app: Flask) -> None:
-    """增量迁移：给已有表添加新字段（幂等，安全重复调用）。
+    """增量迁移：补建缺失的整表、给已有表添加新字段（幂等，安全重复调用）。
 
-    仅在首次部署或表结构变更时生效，不影响已有数据。
+    create_all() 只建不存在的表，不会影响已有表和已有数据。
+    仅在首次部署或表结构变更时生效。
     """
     from sqlalchemy import inspect, text
 
     with app.app_context():
+        # 先确保所有模型对应的表都已创建（如 sales_profiles、notifications 等
+        # 可能在最初部署时代码还未加入，db 中根本没有这几张表）
+        db.create_all()
+        app.logger.info("[迁移] db.create_all() 完成")
+
         inspector = inspect(db.engine)
         table_names = inspector.get_table_names()
 
@@ -94,14 +100,10 @@ def _migrate_schema(app: Flask) -> None:
                 except Exception:
                     db.session.rollback()
 
-        # --- regions 表（可能尚未创建） ---
+        # --- regions 表（可能尚未创建，统一由顶部的 create_all 处理） ---
+        # 此处只记录日志，无需再次 create_all
         if "regions" not in table_names:
-            try:
-                from .models import Region
-                db.create_all()
-                app.logger.info("[迁移] 已创建 regions 表")
-            except Exception:
-                pass
+            app.logger.info("[迁移] regions 表将在 create_all 阶段一并创建")
 
         app.logger.info("[迁移] 数据库结构检查完成")
 
@@ -148,7 +150,20 @@ def create_app() -> Flask:
     # 基础配置，这里使用 SQLite，后续可替换为 MySQL
     # 显式设置 SECRET_KEY，确保 session 可用
     app.config["SECRET_KEY"] = "dev-secret-key"
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///crm.db"
+    # SQLite：必须用绝对路径，避免「当前工作目录」不同导致读到两份库
+    # （例如：在项目根执行 python app.py 与在其它目录执行 python /path/app.py）
+    os.makedirs(app.instance_path, exist_ok=True)
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _db_in_instance = os.path.join(app.instance_path, "crm.db")
+    _db_legacy_root = os.path.join(_repo_root, "crm.db")
+    if os.environ.get("SQLALCHEMY_DATABASE_URI"):
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.environ["SQLALCHEMY_DATABASE_URI"]
+    elif os.path.isfile(_db_in_instance):
+        app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + _db_in_instance.replace("\\", "/")
+    elif os.path.isfile(_db_legacy_root):
+        app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + _db_legacy_root.replace("\\", "/")
+    else:
+        app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + _db_in_instance.replace("\\", "/")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     # SQLAlchemy 连接池配置（生产环境建议在环境变量或实例配置中覆盖）
@@ -170,7 +185,8 @@ def create_app() -> Flask:
     )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
     _setup_logging(app)
-    
+    app.logger.info("数据库 URI：%s", app.config.get("SQLALCHEMY_DATABASE_URI"))
+
     # 邮件配置（QQ邮箱SMTP）
     app.config["MAIL_SERVER"] = "smtp.qq.com"
     app.config["MAIL_PORT"] = 587
