@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+
+{% block title %}数据统计 - 客户管理系统{% endblock %}
+
+{% block page_title %}数据统计{% endblock %}
+
+{% block body %}
+<div class="page-content">
+  <!-- 现代筛选 -->
+  <div class="modern-filter-section">
+    <div class="filter-header">
+      <div class="filter-header-content">
+        <i class="bi bi-funnel filter-icon"></i>
+        <div>
+          <div class="filter-title">筛选条件</div>
+          <div class="filter-subtitle">选择时间范围查看整体表现</div>
+        </div>
+      </div>
+    </div>
+    <form method="get">
+      <div class="filter-panel">
+        <div class="filter-grid">
+          <div class="filter-item">
+            <div class="filter-label">
+              <i class="bi bi-calendar-event"></i>
+              开始时间
+            </div>
+            <input
+              type="datetime-local"
+              name="start"
+              class="modern-input"
+              value="{{ start or '' }}"
+            />
+          </div>
+          <div class="filter-item">
+            <div class="filter-label">
+              <i class="bi bi-calendar-event"></i>
+              结束时间
+            </div>
+            <input
+              type="datetime-local"
+              name="end"
+              class="modern-input"
+              value="{{ end or '' }}"
+            />
+          </div>
+        </div>
+        <div class="filter-actions stats-filter-actions">
+          <div class="quick-range">
+            <span class="quick-range-label">快捷时间</span>
+            <button
+              type="submit"
+              name="preset"
+              value="today"
+              class="preset-btn {% if preset == 'today' %}active{% endif %}"
+            >
+              今天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="yesterday"
+              class="preset-btn {% if preset == 'yesterday' %}active{% endif %}"
+            >
+              昨天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="7d"
+              class="preset-btn {% if preset == '7d' %}active{% endif %}"
+            >
+              近7天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="30d"
+              class="preset-btn {% if preset == '30d' %}active{% endif %}"
+            >
+              近30天
+            </button>
+          </div>
+          <div class="filter-action-buttons">
+            <button type="submit" class="btn-action primary">
+              <i class="bi bi-search"></i>
+              筛选
+            </button>
+            <a href="{{ url_for('stats.stats_index') }}" class="btn-action ghost">
+              <i class="bi bi-arrow-counterclockwise"></i>
+              重置
+            </a>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <!-- 统计概览 -->
+  <div class="stats-summary-grid">
+    <div class="stat-card-modern primary">
+      <div class="stat-card-head">
+        <div class="stat-icon primary">
+          <i class="bi bi-people-fill"></i>
+        </div>
+        <div class="stat-card-label">总客户数</div>
+      </div>
+      <div class="stat-card-value">{{ summary.total_created }}</div>
+      <div class="stat-card-meta">当前筛选下录入的客户</div>
+    </div>
+
+    <div class="stat-card-modern success">
+      <div class="stat-card-head">
+        <div class="stat-icon success">
+          <i class="bi bi-hand-thumbs-up"></i>
+        </div>
+        <div class="stat-card-label">已接单</div>
+      </div>
+      <div class="stat-card-value">{{ summary.total_accepted }}</div>
+      <div class="stat-card-meta">成功派发且被销售接单</div>
+    </div>
+
+    <div class="stat-card-modern warning">
+      <div class="stat-card-head">
+        <div class="stat-icon warning">
+          <i class="bi bi-hourglass-split"></i>
+        </div>
+        <div class="stat-card-label">待接单</div>
+      </div>
+      <div class="stat-card-value">{{ summary.pending }}</div>
+      <div class="stat-card-meta">仍在排队的客户</div>
+    </div>
+
+    <div class="stat-card-modern danger">
+      <div class="stat-card-head">
+        <div class="stat-icon danger">
+          <i class="bi bi-exclamation-triangle-fill"></i>
+        </div>
+        <div class="stat-card-label">超时订单数</div>
+      </div>
+      <div class="stat-card-value">{{ summary.timeout }}</div>
+      <div class="stat-card-meta">超过5分钟未接单的订单</div>
+    </div>
+
+    <div class="stat-card-modern">
+      <div class="stat-card-head">
+        <div class="stat-icon neutral">
+          <i class="bi bi-graph-up-arrow"></i>
+        </div>
+        <div class="stat-card-label">整体转化率</div>
+      </div>
+      <div class="stat-card-value">{{ summary.conversion_rate }}</div>
+      <div class="stat-card-meta">已接单客户中的成功转化占比</div>
+    </div>
+  </div>
+
+  <!-- 详细统计 -->
+  <div class="stats-tabs-container">
+    <div class="stats-tabs" role="tablist">
+      <button class="stats-tab active" type="button" data-tab-target="entry">运营统计</button>
+      <button class="stats-tab" type="button" data-tab-target="accept">接单统计</button>
+      <button class="stats-tab" type="button" data-tab-target="region">地区统计</button>
+    </div>
+
+    <div class="stats-tab-content">
+      <!-- 运营统计 -->
+      <section class="stats-panel active" data-tab-panel="entry">
+        <header class="stats-panel-header">
+          <div>
+            <div class="stats-panel-title">运营统计</div>
+            <div class="stats-panel-meta">运营录入的客户数量排行</div>
+          </div>
+          <span class="stats-panel-chip">
+            总计 {{ summary.total_created }} 条
+          </span>
+        </header>
+        <div class="data-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>运营ID</th>
+                <th>运营名称</th>
+                <th>录入数量</th>
+                <th>有效订单数</th>
+                <th>无效订单数</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data_entry_stats %}
+              <tr>
+                <td>{{ row.id or '-' }}</td>
+                <td>{{ row.username }}</td>
+                <td>{{ row.count }}</td>
+                <td>{{ row.valid_count }}</td>
+                <td>{{ row.invalid_count }}</td>
+                <td>
+                  <a class="btn btn-sm" href="{{ url_for('stats.operator_detail', user_id=row.id, start=start, end=end, preset=preset) }}" target="_blank" rel="noopener noreferrer">详情</a>
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="6" class="empty-state">
+                  <div class="empty-state-icon">📊</div>
+                  <p class="empty-state-text">暂无数据</p>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 接单统计 -->
+      <section class="stats-panel" data-tab-panel="accept">
+        <header class="stats-panel-header">
+          <div>
+            <div class="stats-panel-title">接单统计</div>
+            <div class="stats-panel-meta">销售接单 & 转化表现</div>
+          </div>
+          <span class="stats-panel-chip">
+            已接单 {{ summary.total_accepted }} / 转化率 {{ summary.conversion_rate }}
+          </span>
+        </header>
+        <div class="data-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>销售ID</th>
+                <th>销售名称</th>
+                <th>接单数</th>
+                <th>有效订单数</th>
+                <th>无效订单数</th>
+                <th>转化数</th>
+                <th>转化率</th>
+                <th>超时订单数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in sales_stats %}
+              <tr>
+                <td>{{ row.id or '-' }}</td>
+                <td>{{ row.username }}</td>
+                <td>{{ row.accepted }}</td>
+                <td>{{ row.valid }}</td>
+                <td>{{ row.invalid }}</td>
+                <td>{{ row.converted }}</td>
+                <td>{{ row.rate }}</td>
+                <td>{{ row.timeout or 0 }}</td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="8" class="empty-state">
+                  <div class="empty-state-icon">📊</div>
+                  <p class="empty-state-text">暂无数据</p>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 地区统计 -->
+      <section class="stats-panel" data-tab-panel="region">
+        <header class="stats-panel-header">
+          <div>
+            <div class="stats-panel-title">地区分布与转化</div>
+            <div class="stats-panel-meta">各地区客户数量与转化表现（按当前时间筛选）</div>
+          </div>
+          <span class="stats-panel-chip">
+            共 {{ region_stats|length }} 个地区
+          </span>
+        </header>
+        <div class="data-table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>地区</th>
+                <th>客户数量</th>
+                <th>转化数量</th>
+                <th>转化率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in region_stats %}
+              <tr>
+                <td>{{ row.region }}</td>
+                <td>{{ row.total }}</td>
+                <td>{{ row.converted }}</td>
+                <td>
+                  {% if row.rate != '-' %}
+                  <span style="color: #2563eb; font-weight: 600;">{{ row.rate }}</span>
+                  {% else %}
+                  <span style="color: #9ca3af;">-</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="4" class="empty-state">
+                  <div class="empty-state-icon">📊</div>
+                  <p class="empty-state-text">暂无地区数据</p>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const tabButtons = document.querySelectorAll('[data-tab-target]');
+  const panels = document.querySelectorAll('[data-tab-panel]');
+
+  tabButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.tabTarget;
+
+      tabButtons.forEach((item) => item.classList.remove('active'));
+      panels.forEach((panel) => {
+        panel.classList.toggle('active', panel.dataset.tabPanel === target);
+      });
+
+      btn.classList.add('active');
+    });
+  });
+});
+</script>
+{% endblock %}

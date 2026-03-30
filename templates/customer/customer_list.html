@@ -1,0 +1,1151 @@
+{% extends "base.html" %}
+
+{% block title %}客户列表 - 客户管理系统{% endblock %}
+
+{% block page_title %}客户列表{% endblock %}
+
+{% block body %}
+<div class="page-content">
+  {% set active_tab = request.args.get('tab', 'list') %}
+
+  {% if current_user.role in ['super_admin', 'data_entry', 'operator'] %}
+  <!-- 顶部 Tab：客户列表 / 派单方式 / 待分配销售（超管/数据员/运营可见） -->
+  <div class="customer-tabs-wrapper">
+    <div class="customer-tabs" role="tablist">
+      <a
+        href="{{ url_for('customer.customer_list') }}"
+        class="customer-tab {{ 'active' if active_tab == 'list' else '' }}"
+      >
+        客户列表
+      </a>
+      {% if current_user.role in ['super_admin', 'data_entry'] %}
+      <a
+        href="{{ url_for('customer.customer_list', tab='dispatch') }}"
+        class="customer-tab {{ 'active' if active_tab == 'dispatch' else '' }}"
+      >
+        派单方式
+      </a>
+      <a
+        href="{{ url_for('customer.customer_list', tab='pending') }}"
+        class="customer-tab {{ 'active' if active_tab == 'pending' else '' }}"
+      >
+        待分配销售
+      </a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if active_tab == 'pending' and current_user.role in ['super_admin', 'data_entry'] %}
+  <div class="pending-assignment-section">
+    <div class="pending-assignment-header">
+      <h3 class="pending-assignment-title">
+        <i class="bi bi-hourglass-split"></i>
+        待分配客户列表
+      </h3>
+      <p class="pending-assignment-desc">
+        以下客户尚未分配给销售，请手动选择销售进行派单。
+      </p>
+    </div>
+
+    {% if customers %}
+    <!-- 数据表格 -->
+    <div class="data-table-wrapper">
+      <table class="data-table">
+        <thead>
+        <tr>
+            <th>序号</th>
+            <th>图片</th>
+            <th>姓名</th>
+            <th>联系方式</th>
+            <th>地区</th>
+            <th>创建时间</th>
+            <th>运营</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in customers %}
+          <tr>
+            <td>{{ (pagination.page - 1) * per_page + loop.index }}</td>
+            <td>
+              {% if c.image_path %}
+              <div class="image-preview-container">
+                {% set thumb_path = thumbnail_map.get(c.id) %}
+                {% set preview_path = preview_map.get(c.id) %}
+                {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
+                {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
+                {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
+                <picture>
+                  {% if thumb_path %}
+                  <source srcset="{{ thumb_url }}" type="image/webp">
+                  {% endif %}
+                  <img src="{{ thumb_url }}"
+                     alt="客户图片"
+                       width="96"
+                       height="96"
+                     class="customer-thumbnail"
+                       data-preview-url="{{ preview_url }}"
+                       data-full-url="{{ full_image_url }}"
+                       loading="lazy"
+                       decoding="async"
+                       fetchpriority="low">
+                </picture>
+              </div>
+              {% else %}
+              <span style="color: #9ca3af;">-</span>
+              {% endif %}
+            </td>
+            <td>{{ c.name or '-' }}</td>
+            <td>
+              {% if c.phone %}
+              <button
+                type="button"
+                class="copy-phone-btn"
+                data-phone="{{ c.phone }}"
+                title="点击复制联系方式"
+              >
+                <span class="copy-phone-text">{{ c.phone }}</span>
+                <i class="bi bi-clipboard"></i>
+              </button>
+              {% else %}
+              <span style="color: #9ca3af;">-</span>
+              {% endif %}
+            </td>
+            <td>{{ c.region or '-' }}</td>
+            <td>
+              {% if c.created_at %}
+              {{ (c.created_at | beijing_time).strftime('%Y-%m-%d %H:%M:%S') }}
+              {% else %}
+              <span style="color: #9ca3af;">-</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if c.operator %}
+              {{ c.operator.username }}
+              {% else %}
+              <span style="color: #9ca3af;">-</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" action="{{ url_for('customer.pending_assign', customer_id=c.id) }}" class="pending-assign-form">
+                <div class="pending-assign-controls">
+                  <select name="sales_id" class="pending-assign-select" required>
+                    <option value="">请选择销售</option>
+                    {% if sales_with_stats %}
+                      {% for stat in sales_with_stats %}
+                        {% set s = stat.user %}
+                        {% if s.sales_profile and s.sales_profile.service_region == c.region %}
+                        <option value="{{ s.id }}">
+                          {{ s.username }} ({{ s.sales_profile.service_region }}) - 转化率: {{ stat.conversion_rate }}
+                        </option>
+                        {% endif %}
+                      {% endfor %}
+                      {% if c.region %}
+                      <optgroup label="其他地区销售">
+                        {% for stat in sales_with_stats %}
+                          {% set s = stat.user %}
+                          {% if not s.sales_profile or s.sales_profile.service_region != c.region %}
+                          <option value="{{ s.id }}">
+                            {{ s.username }}{% if s.sales_profile %} ({{ s.sales_profile.service_region }}){% endif %} - 转化率: {{ stat.conversion_rate }}
+                          </option>
+                          {% endif %}
+                        {% endfor %}
+                      </optgroup>
+                      {% endif %}
+                    {% endif %}
+                  </select>
+                  <button type="submit" class="pending-assign-btn">
+                    <i class="bi bi-send-fill"></i>
+                    <span>派单</span>
+                  </button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if pagination and pagination.pages > 1 %}
+    <div class="pagination-container">
+      <div class="pagination-info">
+        第 {{ pagination.page }} / {{ pagination.pages }} 页，共 {{ pagination.total }} 条记录
+        （每页 {{ per_page }} 条）
+      </div>
+      <div class="pagination-controls">
+        {% set prev_params = {'tab': 'pending', 'page': pagination.prev_num} %}
+        <a
+          class="pagination-btn {{ 'disabled' if not pagination.has_prev }}"
+          {% if pagination.has_prev %}
+          href="{{ url_for('customer.customer_list', **prev_params) }}"
+          {% else %}
+          tabindex="-1"
+          {% endif %}
+        >上一页</a>
+
+        <div class="pagination-pages">
+          {% for page_num in pagination.iter_pages(left_edge=1, left_current=2, right_current=2, right_edge=1) %}
+            {% if page_num %}
+              {% set page_params = {'tab': 'pending', 'page': page_num} %}
+              {% if page_num == pagination.page %}
+              <span class="pagination-page active">{{ page_num }}</span>
+              {% else %}
+              <a class="pagination-page" href="{{ url_for('customer.customer_list', **page_params) }}">{{ page_num }}</a>
+              {% endif %}
+            {% else %}
+              <span class="pagination-ellipsis">…</span>
+            {% endif %}
+          {% endfor %}
+        </div>
+
+        {% set next_params = {'tab': 'pending', 'page': pagination.next_num} %}
+        <a
+          class="pagination-btn {{ 'disabled' if not pagination.has_next }}"
+          {% if pagination.has_next %}
+          href="{{ url_for('customer.customer_list', **next_params) }}"
+          {% else %}
+          tabindex="-1"
+          {% endif %}
+        >下一页</a>
+      </div>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="empty-state" style="padding: 3rem 1rem; text-align: center;">
+      <div class="empty-state-icon">✅</div>
+      <p class="empty-state-text">暂无待分配客户</p>
+    </div>
+    {% endif %}
+  </div>
+
+  {% elif active_tab == 'dispatch' and current_user.role in ['super_admin', 'data_entry'] %}
+  <!-- 派单方式 Tab 内容（仅超级管理员 / 数据员） -->
+  <div class="dispatch-settings-card">
+    <div class="dispatch-settings-header">
+      <div class="dispatch-settings-icon">
+        <i class="bi bi-arrow-repeat"></i>
+      </div>
+      <div class="dispatch-settings-title-group">
+        <h3 class="dispatch-settings-title">系统派单设置</h3>
+        <div class="dispatch-settings-status {{ 'enabled' if system_dispatch_enabled else 'disabled' }}">
+          <span class="status-dot"></span>
+          <span class="status-text">{{ '已开启' if system_dispatch_enabled else '已关闭' }}</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="dispatch-settings-content">
+      <div class="dispatch-settings-description">
+        <p class="description-main">
+          <i class="bi bi-info-circle"></i>
+          开启后，所有未分配客户将按「地区 + 派单序号」自动分配给销售；关闭时仅超级管理员和数据员可以手动派单。
+        </p>
+        <div class="description-rules">
+          <div class="rule-item">
+            <i class="bi bi-clock"></i>
+            <span>同一销售在一轮轮询中只会获得 1 单，轮完后再从序号 1 开始</span>
+          </div>
+          <div class="rule-item">
+            <i class="bi bi-geo-alt"></i>
+            <span>某地区没有可用销售时，该地区客户将进入公海，供销售自助领取</span>
+          </div>
+        </div>
+      </div>
+      
+      <form method="post" action="{{ url_for('admin.toggle_system_dispatch') }}" class="dispatch-settings-form">
+        <input type="hidden" name="enabled" value="{{ 'false' if system_dispatch_enabled else 'true' }}">
+        <button type="submit" class="dispatch-toggle-btn {{ 'danger' if system_dispatch_enabled else 'primary' }}">
+          <i class="bi {{ 'bi-pause-circle' if system_dispatch_enabled else 'bi-play-circle' }}"></i>
+          <span>{{ '关闭系统派单' if system_dispatch_enabled else '开启系统派单' }}</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {% else %}
+
+  <!-- 顶部操作区：超管/数据员=全系统统计；运营=排名；销售=仅我的接单数据 -->
+  {% if current_user.role in ['super_admin', 'data_entry'] %}
+  <div class="page-header-summary-row">
+  <div class="page-header">
+    <a href="{{ url_for('customer.customer_create') }}" class="btn-action primary">
+      <i class="bi-plus"></i> 添加
+    </a>
+    </div>
+    <div class="page-summary-row">
+      {% if next_sales_by_region %}
+      <div class="summary-card next-sales-card">
+        <div class="summary-card-label">各地区下一位待派销售</div>
+        <div class="next-sales-list">
+          {% for item in next_sales_by_region %}
+          <div class="next-sales-item">
+            <span class="next-sales-region">{{ item.region }}</span>
+            <span class="next-sales-sep">→</span>
+            <span class="next-sales-name">{{ item.username }}</span>
+            {% if item.dispatch_order %}
+            <span class="next-sales-order">序号 {{ item.dispatch_order }}</span>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="summary-card" id="todayCreatedSummary">
+        <div class="summary-card-label">当日新增客户</div>
+        <div class="summary-card-value" id="todayCreatedCount">--</div>
+        <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
+      </div>
+      
+      <div class="summary-card summary-card--region-stats" id="regionStatsSummary">
+        <div class="summary-card-label">地区新增统计</div>
+        <div id="regionStatsList" style="font-size: 0.875rem; line-height: 1.6;">
+          <div style="color: #9ca3af;">加载中...</div>
+        </div>
+        <div class="summary-card-meta" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
+          <span id="personalStatsLabel" style="font-weight: 600;"></span>
+          <span id="personalStatsCount" style="color: #2563eb; font-weight: 600; margin-left: 0.25rem;">--</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% elif current_user.role == 'operator' %}
+  <div class="page-header-summary-row">
+    <div class="page-header">
+      <a href="{{ url_for('customer.customer_create') }}" class="btn-action primary">
+        <i class="bi-plus"></i> 添加
+      </a>
+    </div>
+    <div class="page-summary-row">
+      <div class="summary-card" id="operatorEntryRankingCard">
+        <div class="summary-card-label">本班次录入排名</div>
+        <div id="operatorEntryRankingList" style="font-size: 0.875rem; line-height: 1.6;">
+          <div style="color: #9ca3af;">加载中...</div>
+        </div>
+        <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
+      </div>
+      <div class="summary-card" id="operatorSalesRankingCard">
+        <div class="summary-card-label">本班次接单排名</div>
+        <div id="operatorSalesRankingList" style="font-size: 0.875rem; line-height: 1.6;">
+          <div style="color: #9ca3af;">加载中...</div>
+        </div>
+        <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="page-summary-row" style="margin-bottom: 1rem;">
+    <div class="summary-card" id="salesPersonalSummary">
+      <div class="summary-card-label">我的接单数据</div>
+      <div class="summary-card-value" id="salesPersonalOrderCount">--</div>
+      <div class="summary-card-meta">统计时间：最近一个18:00 至 当前</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if current_user.role == 'sales' %}
+  {% set is_online = current_user.sales_profile.is_available if current_user.sales_profile else False %}
+  <div
+    class="sales-availability-card {{ 'online' if is_online else 'offline' }}"
+    id="salesAvailabilityCard"
+    data-online="{{ 'true' if is_online else 'false' }}"
+    data-update-url="{{ url_for('customer.update_sales_availability') }}"
+  >
+    <div class="sales-availability-status">
+      <div class="sales-availability-status-dot"></div>
+      <div>
+        <div class="sales-availability-status-title" id="salesAvailabilityStatusText">
+          {{ "在线接单中" if is_online else "已离线" }}
+        </div>
+        <div class="sales-availability-status-desc" id="salesAvailabilitySubtext">
+          {{ "系统会将符合条件的订单派给你。" if is_online else "系统不会向你派单，记得需要接单时再上线。" }}
+        </div>
+      </div>
+    </div>
+    <div class="sales-availability-actions">
+      <div class="sales-availability-tip">
+        <i class="bi-info-circle"></i>
+        <span>至少一位销售在线时，系统才会派单。</span>
+      </div>
+      <button type="button" class="sales-availability-toggle" id="salesAvailabilityToggle">
+        <span id="salesAvailabilityButtonText">
+          {{ "切换为离线" if is_online else "切换为上线" }}
+        </span>
+      </button>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- 筛选器 -->
+  <div class="modern-filter-section">
+    <div class="filter-header">
+      <div class="filter-header-content">
+        <i class="bi-funnel-fill filter-icon"></i>
+        <span class="filter-title" id="filterTitle">全部</span>
+      </div>
+    </div>
+    <div class="filter-panel active" id="filterPanel">
+      <form method="get" id="filterForm">
+        <div class="filter-grid">
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-calendar3"></i>
+              <span>派单日期起</span>
+            </label>
+            <input
+              type="datetime-local"
+              name="start_date"
+              class="modern-input"
+              value="{{ request.args.get('start_date', '') }}"
+            />
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-calendar3"></i>
+              <span>派单日期止</span>
+            </label>
+            <input
+              type="datetime-local"
+              name="end_date"
+              class="modern-input"
+              value="{{ request.args.get('end_date', '') }}"
+            />
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-flag-fill"></i>
+              <span>状态</span>
+            </label>
+            <select name="status" class="modern-select">
+              <option value="">全部</option>
+              <option value="unassigned" {% if request.args.get('status') == 'unassigned' %}selected{% endif %}>未分配</option>
+              <option value="pending" {% if request.args.get('status') == 'pending' %}selected{% endif %}>待接单</option>
+              <option value="timeout" {% if request.args.get('status') == 'timeout' %}selected{% endif %}>超时</option>
+              <option value="accepted" {% if request.args.get('status') == 'accepted' %}selected{% endif %}>已接单</option>
+              <option value="public_pool" {% if request.args.get('status') == 'public_pool' %}selected{% endif %}>公海</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-check-circle-fill"></i>
+              <span>是否转化</span>
+            </label>
+            <select name="is_converted" class="modern-select">
+              <option value="">全部</option>
+              <option value="true" {% if request.args.get('is_converted') == 'true' %}selected{% endif %}>已转化</option>
+              <option value="false" {% if request.args.get('is_converted') == 'false' %}selected{% endif %}>未转化</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-shield-check"></i>
+              <span>是否有效</span>
+            </label>
+            <select name="is_valid" class="modern-select">
+              <option value="">全部</option>
+              <option value="true" {% if request.args.get('is_valid') == 'true' %}selected{% endif %}>有效</option>
+              <option value="false" {% if request.args.get('is_valid') == 'false' %}selected{% endif %}>无效</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-geo-alt-fill"></i>
+              <span>地区</span>
+            </label>
+            <select name="region" class="modern-select">
+              <option value="">全部</option>
+              {% for region_name in region_list %}
+              <option value="{{ region_name }}" {% if request.args.get('region') == region_name %}selected{% endif %}>{{ region_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="filter-item">
+            <label class="filter-label">
+              <i class="bi-search"></i>
+              <span>订单序号 / 微信号</span>
+            </label>
+            <input
+              type="text"
+              name="q"
+              class="modern-input"
+              placeholder="输入订单序号或微信号搜索"
+              value="{{ request.args.get('q','') }}"
+            />
+          </div>
+        </div>
+        <div class="filter-actions">
+          <div class="quick-range">
+            <span class="quick-range-label">快捷时间</span>
+            <button
+              type="submit"
+              name="preset"
+              value="today"
+              class="preset-btn {% if request.args.get('preset') == 'today' %}active{% endif %}"
+            >
+              今天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="yesterday"
+              class="preset-btn {% if request.args.get('preset') == 'yesterday' %}active{% endif %}"
+            >
+              昨天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="7d"
+              class="preset-btn {% if request.args.get('preset') == '7d' %}active{% endif %}"
+            >
+              近7天
+            </button>
+            <button
+              type="submit"
+              name="preset"
+              value="30d"
+              class="preset-btn {% if request.args.get('preset') == '30d' %}active{% endif %}"
+            >
+              近30天
+            </button>
+          </div>
+          <div class="filter-action-buttons">
+          <button type="submit" class="modern-btn primary">
+            <i class="bi-search"></i>
+            <span>筛选</span>
+          </button>
+          <button
+            type="submit"
+            name="only_timeout"
+            value="1"
+            class="preset-btn {% if request.args.get('only_timeout') %}active{% endif %}"
+          >
+            超时订单
+          </button>
+          <button type="button" class="modern-btn secondary" onclick="resetFilters()">
+            <i class="bi-arrow-counterclockwise"></i>
+            <span>重置</span>
+          </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 数据表格 -->
+  <div class="data-table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>序号</th>
+          <th>客户月度编号</th>
+          <th>图片</th>
+          <th>姓名</th>
+          <th>联系方式</th>
+          <th>地区</th>
+          <th>派单日期</th>
+          <th>接单日期</th>
+          <th>销售代表</th>
+          <th>派单方式</th>
+          <th>运营</th>
+          <th>状态</th>
+          <th>有效性</th>
+          {% if current_user.role != 'operator' %}
+          <th>转化</th>
+          {% endif %}
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in customers %}
+        <tr data-customer-id="{{ c.id }}" onclick="onCustomerRowClick({{ c.id }}, this)">
+          {# 序号按最新在前的排序倒序编号 #}
+          <td>{{ pagination.total - (pagination.page - 1) * per_page - loop.index0 }}</td>
+          <td>{{ c.monthly_display_id }}</td>
+          <td>
+            {% if c.image_path %}
+            <div class="image-preview-container">
+              {% set thumb_path = thumbnail_map.get(c.id) %}
+              {% set preview_path = preview_map.get(c.id) %}
+              {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
+              {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
+              {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
+              <picture>
+                {% if thumb_path %}
+                <source srcset="{{ thumb_url }}" type="image/webp">
+                {% endif %}
+                <img src="{{ thumb_url }}"
+                   alt="客户图片"
+                     width="96"
+                     height="96"
+                   class="customer-thumbnail"
+                     data-preview-url="{{ preview_url }}"
+                     data-full-url="{{ full_image_url }}"
+                     loading="lazy"
+                     decoding="async"
+                     fetchpriority="low">
+              </picture>
+            </div>
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>{{ c.name }}</td>
+          <td>
+            {% if c.phone %}
+            <button
+              type="button"
+              class="copy-phone-btn"
+              data-phone="{{ c.phone }}"
+              title="点击复制联系方式"
+            >
+              <span class="copy-phone-text">{{ c.phone }}</span>
+              <i class="bi bi-clipboard"></i>
+            </button>
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>{{ c.region or '-' }}</td>
+          <td>
+            {% if c.dispatch_time %}
+            {{ (c.dispatch_time | beijing_time).strftime('%Y-%m-%d %H:%M:%S') }}
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if c.accepted_time %}
+            {{ (c.accepted_time | beijing_time).strftime('%Y-%m-%d %H:%M:%S') }}
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>{{ c.sales.username if c.sales else '-' }}</td>
+          <td>
+            {% if c.dispatcher %}
+              {% if c.dispatcher.role == 'super_admin' %}
+              <span style="color: #111827;">超级管理员派单</span>
+              {% elif c.dispatcher.role == 'data_entry' %}
+              <span style="color: #111827;">数据员派单</span>
+              {% else %}
+              <span style="color: #111827;">管理员派单</span>
+              {% endif %}
+            {% elif c.dispatcher_id is none and c.sales_id %}
+            <span style="color: #6b7280;">系统派单</span>
+            {% else %}
+            <span style="color: #9ca3af;">未分配</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if c.operator %}
+            {{ c.operator.username }}
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="status-badge {{ c.status }}">
+              {% if c.status == 'pending' %}
+                {% if current_user.role == 'sales' and c.sales_id == current_user.id %}未接单
+                {% else %}待接单
+                {% endif %}
+              {% elif c.status == 'accepted' %}已接单
+              {% elif c.status == 'timeout' %}超时
+              {% elif c.status == 'public_pool' %}公海
+              {% elif c.status == 'unassigned' %}未分配
+              {% else %}未知状态{% endif %}
+            </span>
+          </td>
+          <td>
+            {% if c.is_valid is none %}
+            <span style="color: #9ca3af;">未填写</span>
+            {% elif c.is_valid %}
+            <span style="color: #059669; font-weight: 600;">有效</span>
+            {% else %}
+            <span style="color: #dc2626; font-weight: 600;">无效</span>
+            {% endif %}
+          </td>
+          {% if current_user.role != 'operator' %}
+          <td>
+            {% if c.is_converted is none %}
+            <span style="color: #9ca3af;">未填写</span>
+            {% elif c.is_converted %}
+            <span style="color: #2563eb; font-weight: 600;">已转化</span>
+            {% else %}
+            <span style="color: #6b7280; font-weight: 600;">未转化</span>
+            {% endif %}
+          </td>
+          {% endif %}
+          <td>
+            <div style="display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center;">
+            {% if current_user.role == 'sales' and c.sales_id == current_user.id and c.status == 'pending' %}
+              <form method="post" action="{{ url_for('customer.customer_accept', customer_id=c.id) }}" style="display: inline; margin: 0;">
+                <button type="submit" class="btn-action primary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; white-space: nowrap;">
+                接单
+              </button>
+            </form>
+            {% endif %}
+              {% if current_user.role in ['super_admin', 'data_entry', 'operator'] and c.dispatcher_id is none and c.status == 'pending' and c.sales_id %}
+              <form method="post" action="{{ url_for('customer.release_to_public_pool', customer_id=c.id) }}" style="display: inline; margin: 0;" onsubmit="return confirm('确定要将此客户释放到公海吗？');">
+                <button type="submit" class="btn-action" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background-color: #f59e0b; color: white; border-color: #f59e0b; white-space: nowrap;">
+                  释放
+                </button>
+              </form>
+              {% endif %}
+              <a href="{{ url_for('customer.customer_detail', customer_id=c.id) }}" target="_blank" rel="noopener noreferrer" class="btn-action" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap; text-decoration: none;">
+              查看
+            </a>
+            <!-- 移动端：运营/超管/数据员内联修改和删除按钮 -->
+            {% if current_user.role in ['super_admin', 'data_entry', 'operator'] %}
+              {% set can_edit = (current_user.is_super_admin() or current_user.role in ['operator', 'data_entry'] and c.creator_id == current_user.id) %}
+              {% set can_delete = (current_user.is_super_admin() or current_user.role in ['operator', 'data_entry'] and c.creator_id == current_user.id) %}
+              {% if can_edit %}
+              <a href="{{ url_for('customer.customer_edit', customer_id=c.id) }}" class="btn-action d-md-none" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; white-space: nowrap; text-decoration: none;">
+                修改
+              </a>
+              {% endif %}
+              {% if can_delete %}
+              <form method="post" action="{{ url_for('customer.customer_delete', customer_id=c.id) }}" style="display: inline; margin: 0;" onsubmit="return confirm('确定要删除此客户吗？删除后无法恢复。');">
+                <button type="submit" class="btn-action d-md-none" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background-color: #dc2626; color: white; border-color: #dc2626; white-space: nowrap;">
+                  删除
+                </button>
+              </form>
+              {% endif %}
+            {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          {% set col_count = 14 - (1 if current_user.role == 'operator' else 0) %}
+          <td colspan="{{ col_count }}" class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p class="empty-state-text">暂无数据显示</p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pagination and pagination.pages > 1 %}
+  <div class="pagination-container">
+    <div class="pagination-info">
+      第 {{ pagination.page }} / {{ pagination.pages }} 页，共 {{ pagination.total }} 条记录
+      （每页 {{ per_page }} 条）
+    </div>
+    <div class="pagination-controls">
+      {% set prev_params = current_filters.copy() %}
+      {% set _ = prev_params.update({'page': pagination.prev_num}) %}
+      <a
+        class="pagination-btn {{ 'disabled' if not pagination.has_prev }}"
+        {% if pagination.has_prev %}
+        href="{{ url_for('customer.customer_list', **prev_params) }}"
+        {% else %}
+        tabindex="-1"
+        {% endif %}
+      >上一页</a>
+
+      <div class="pagination-pages">
+        {% for page_num in pagination.iter_pages(left_edge=1, left_current=2, right_current=2, right_edge=1) %}
+          {% if page_num %}
+            {% set page_params = current_filters.copy() %}
+            {% set _ = page_params.update({'page': page_num}) %}
+            {% if page_num == pagination.page %}
+            <span class="pagination-page active">{{ page_num }}</span>
+            {% else %}
+            <a class="pagination-page" href="{{ url_for('customer.customer_list', **page_params) }}">{{ page_num }}</a>
+            {% endif %}
+          {% else %}
+            <span class="pagination-ellipsis">…</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      {% set next_params = current_filters.copy() %}
+      {% set _ = next_params.update({'page': pagination.next_num}) %}
+      <a
+        class="pagination-btn {{ 'disabled' if not pagination.has_next }}"
+        {% if pagination.has_next %}
+        href="{{ url_for('customer.customer_list', **next_params) }}"
+        {% else %}
+        tabindex="-1"
+        {% endif %}
+      >下一页</a>
+    </div>
+  </div>
+  {% endif %}
+  <!-- 操作按钮（桌面端：点选表格行后使用；移动端已有行内修改/删除，不再显示底部大块按钮） -->
+  <div class="action-buttons d-none d-md-flex">
+    <button id="editCustomerBtn" type="button" class="btn-action" onclick="handleEditButtonClick(event)">
+      <i class="bi-pencil"></i> 修改
+    </button>
+    <button id="deleteCustomerBtn" type="button" class="btn-action danger" onclick="handleDeleteButtonClick(event)">
+      <i class="bi-trash"></i> 删除
+    </button>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+let selectedCustomerId = null;
+
+function editSelectedCustomer() {
+  if (!selectedCustomerId) {
+    alert('请先选择要编辑的客户');
+    return;
+  }
+  console.log('Navigating to edit page for customer:', selectedCustomerId);
+  window.location.href = `/customers/${selectedCustomerId}/edit`;
+}
+
+function deleteSelectedCustomer() {
+  if (!selectedCustomerId) {
+    alert('请先选择要删除的客户');
+    return;
+  }
+  if (!confirm('确定要删除此客户吗？删除后无法恢复，相关数据将被清理。')) return;
+  
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `/customers/${selectedCustomerId}/delete`;
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function resetFilters() {
+  document.getElementById('filterForm').reset();
+  updateFilterTitle();
+  location.href = '{{ url_for("customer.customer_list") }}';
+}
+
+// 选中某一行客户（仅高亮 + 记录 ID，不再自动跳转编辑页）
+function onCustomerRowClick(id, rowEl) {
+  document.querySelectorAll('.data-table tbody tr').forEach(r => r.classList.remove('selected'));
+  if (rowEl) {
+    rowEl.classList.add('selected');
+  }
+  selectedCustomerId = id;
+  console.log('Selected customer row (inline):', selectedCustomerId);
+  // 如需进入编辑，请点击上方“修改”按钮或操作列里的“查看”链接
+}
+
+// 更新筛选标题（全部/筛选的）
+function updateFilterTitle() {
+  const form = document.getElementById('filterForm');
+  const inputs = form.querySelectorAll('input[type="datetime-local"], select');
+  let hasFilter = false;
+  inputs.forEach(input => {
+    if (input.value && input.value !== '') {
+      hasFilter = true;
+    }
+  });
+  const titleElement = document.getElementById('filterTitle');
+  titleElement.textContent = hasFilter ? '筛选的' : '全部';
+}
+
+// 初次加载：仅绑定筛选器变化和初始化其它功能
+document.addEventListener('DOMContentLoaded', function () {
+  updateFilterTitle();
+  const form = document.getElementById('filterForm');
+  if (form) {
+  form.querySelectorAll('input, select').forEach(element => {
+    element.addEventListener('change', updateFilterTitle);
+  });
+  }
+  
+  // 载入当日新增客户总量并定时刷新
+  refreshTodayCreatedCount();
+  setInterval(refreshTodayCreatedCount, 60000); // 每 60 秒刷新一次
+  
+  // 载入地区统计和个人统计
+  refreshRegionStats();
+  setInterval(refreshRegionStats, 60000); // 每 60 秒刷新一次
+
+  initImagePreview();
+  initSalesAvailabilityToggle();
+});
+
+// 明确调试按钮是否收到点击
+function handleEditButtonClick(event) {
+  console.log('Edit button raw click', event.type);
+  editSelectedCustomer();
+}
+
+function handleDeleteButtonClick(event) {
+  console.log('Delete button raw click', event.type);
+  deleteSelectedCustomer();
+}
+
+async function refreshTodayCreatedCount() {
+  const countEl = document.getElementById('todayCreatedCount');
+  if (!countEl) return;
+
+  try {
+    const resp = await fetch('/customers/summary/today-created-count', {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!resp.ok) throw new Error('网络错误：' + resp.status);
+    const data = await resp.json();
+    if (data && data.success) {
+      countEl.textContent = data.count;
+    }
+  } catch (err) {
+    console.error('Failed to load today created count:', err);
+  }
+}
+
+function _renderRankingList(container, rows, emptyText) {
+  if (!rows || rows.length === 0) {
+    container.innerHTML = `<div style="color: #9ca3af;">${emptyText}</div>`;
+    return;
+  }
+  let rank = 1;
+  container.innerHTML = rows.map(item => {
+    const line = `<div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem; gap: 0.5rem;">
+      <span><span style="color: #9ca3af; margin-right: 0.35rem;">${rank}.</span>${item.username || '-'}</span>
+      <span style="font-weight: 600; color: #2563eb; flex-shrink: 0;">${item.count}</span>
+    </div>`;
+    rank += 1;
+    return line;
+  }).join('');
+}
+
+async function refreshRegionStats() {
+  const regionStatsList = document.getElementById('regionStatsList');
+  const personalStatsLabel = document.getElementById('personalStatsLabel');
+  const personalStatsCount = document.getElementById('personalStatsCount');
+  const operatorEntryList = document.getElementById('operatorEntryRankingList');
+  const operatorSalesList = document.getElementById('operatorSalesRankingList');
+  const salesPersonalCount = document.getElementById('salesPersonalOrderCount');
+
+  const needStats =
+    (regionStatsList && personalStatsLabel && personalStatsCount) ||
+    (operatorEntryList && operatorSalesList) ||
+    salesPersonalCount;
+  if (!needStats) return;
+
+  try {
+    const resp = await fetch('/customers/summary/region-stats', {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!resp.ok) throw new Error('网络错误：' + resp.status);
+    const data = await resp.json();
+    if (!data || !data.success) return;
+
+    if (data.view === 'full' && regionStatsList && personalStatsLabel && personalStatsCount) {
+      if (data.region_stats && data.region_stats.length > 0) {
+        regionStatsList.innerHTML = data.region_stats.map(item =>
+          `<div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+            <span>${item.region || '未设置'}</span>
+            <span style="font-weight: 600; color: #2563eb;">${item.count}</span>
+          </div>`
+        ).join('');
+      } else {
+        regionStatsList.innerHTML = '<div style="color: #9ca3af;">暂无数据</div>';
+      }
+      if (data.personal_label) {
+        personalStatsLabel.textContent = data.personal_label + '：';
+        personalStatsCount.textContent = data.personal_count;
+      } else {
+        personalStatsLabel.textContent = '';
+        personalStatsCount.textContent = '';
+      }
+    } else if (data.view === 'rankings' && operatorEntryList && operatorSalesList) {
+      _renderRankingList(operatorEntryList, data.entry_ranking, '暂无数据');
+      _renderRankingList(operatorSalesList, data.sales_ranking, '暂无数据');
+    } else if (data.view === 'personal' && salesPersonalCount) {
+      salesPersonalCount.textContent = data.personal_count != null ? data.personal_count : '--';
+    }
+  } catch (err) {
+    console.error('Failed to load region stats:', err);
+    if (regionStatsList) {
+      regionStatsList.innerHTML = '<div style="color: #dc2626;">加载失败</div>';
+    }
+    if (operatorEntryList) {
+      operatorEntryList.innerHTML = '<div style="color: #dc2626;">加载失败</div>';
+    }
+    if (operatorSalesList) {
+      operatorSalesList.innerHTML = '<div style="color: #dc2626;">加载失败</div>';
+    }
+  }
+}
+
+// 图片预览功能
+function initImagePreview() {
+  // 创建预览覆盖层
+  const overlay = document.createElement('div');
+  overlay.className = 'image-preview-overlay';
+  overlay.innerHTML = `
+    <div class="image-preview-close" onclick="closeImagePreview()">×</div>
+      <a class="image-preview-open-original" href="#" target="_blank" rel="noopener">查看原图</a>
+    <img src="" alt="预览图片">
+  `;
+  document.body.appendChild(overlay);
+  const openOriginalLink = overlay.querySelector('.image-preview-open-original');
+  
+  // 为所有缩略图添加点击事件
+  document.querySelectorAll('.customer-thumbnail').forEach(img => {
+    img.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const previewUrl = this.getAttribute('data-preview-url');
+      const fullUrl = this.getAttribute('data-full-url');
+      if (previewUrl || fullUrl) {
+        showImagePreview(previewUrl, fullUrl);
+      }
+    });
+    
+    // 鼠标悬停时显示放大效果
+    img.addEventListener('mouseenter', function() {
+      this.style.transform = 'scale(1.2)';
+      this.style.zIndex = '1000';
+      this.style.position = 'relative';
+    });
+    
+    img.addEventListener('mouseleave', function() {
+      this.style.transform = 'scale(1)';
+      this.style.zIndex = 'auto';
+    });
+  });
+  
+  // 点击覆盖层关闭预览
+  overlay.addEventListener('click', function(e) {
+    if (
+      e.target === overlay ||
+      e.target.classList.contains('image-preview-close')
+    ) {
+      closeImagePreview();
+    }
+  });
+  
+  // ESC键关闭预览
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeImagePreview();
+    }
+  });
+}
+
+function showImagePreview(previewUrl, fullUrl) {
+  const overlay = document.querySelector('.image-preview-overlay');
+  const img = overlay.querySelector('img');
+  const openOriginalLink = overlay.querySelector('.image-preview-open-original');
+
+  img.src = previewUrl || fullUrl || '';
+  if (openOriginalLink) {
+    if (fullUrl) {
+      openOriginalLink.href = fullUrl;
+      openOriginalLink.style.display = 'flex';
+      openOriginalLink.textContent = '查看原图';
+    } else {
+      openOriginalLink.removeAttribute('href');
+      openOriginalLink.style.display = 'none';
+    }
+  }
+
+  overlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+
+  if (fullUrl && previewUrl !== fullUrl) {
+    const highResImg = new Image();
+    highResImg.onload = () => {
+      if (overlay.classList.contains('active')) {
+        img.src = fullUrl;
+      }
+    };
+    highResImg.src = fullUrl;
+  }
+}
+
+function closeImagePreview() {
+  const overlay = document.querySelector('.image-preview-overlay');
+  overlay.classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+function initSalesAvailabilityToggle() {
+  const card = document.getElementById('salesAvailabilityCard');
+  const toggleBtn = document.getElementById('salesAvailabilityToggle');
+  const statusText = document.getElementById('salesAvailabilityStatusText');
+  const subText = document.getElementById('salesAvailabilitySubtext');
+  const btnText = document.getElementById('salesAvailabilityButtonText');
+
+  if (!card || !toggleBtn || !statusText || !subText || !btnText) {
+    return;
+  }
+
+  const updateUrl = card.dataset.updateUrl;
+  if (!updateUrl) return;
+
+  function applyState(isOnline) {
+    card.dataset.online = isOnline ? 'true' : 'false';
+    card.classList.toggle('online', isOnline);
+    card.classList.toggle('offline', !isOnline);
+    statusText.textContent = isOnline ? '在线接单中' : '已离线';
+    subText.textContent = isOnline
+      ? '系统会将符合条件的订单派给你。'
+      : '系统不会向你派单，记得需要接单时再上线。';
+    btnText.textContent = isOnline ? '切换为离线' : '切换为上线';
+  }
+
+  applyState(card.dataset.online === 'true');
+
+  toggleBtn.addEventListener('click', async function() {
+    if (toggleBtn.disabled) return;
+    const nextState = card.dataset.online !== 'true';
+    toggleBtn.disabled = true;
+    btnText.textContent = '切换中...';
+
+    try {
+      const response = await fetch(updateUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({ online: nextState })
+      });
+
+      let result = null;
+      try {
+        result = await response.json();
+      } catch (parseError) {
+        // ignore parse error, will be handled below
+      }
+
+      if (!response.ok || !result) {
+        throw new Error(
+          (result && (result.error || result.message)) || '切换失败，请稍后再试。'
+        );
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || '切换失败，请稍后再试。');
+      }
+
+      applyState(Boolean(result.online));
+      if (result.assigned_customers && result.assigned_customers > 0) {
+        alert(`系统已为你自动分配 ${result.assigned_customers} 位公海客户，请及时跟进。`);
+        window.location.reload();
+      }
+    } catch (error) {
+      alert(error.message);
+      // 切换失败时还原按钮文本
+      applyState(card.dataset.online === 'true');
+    } finally {
+      toggleBtn.disabled = false;
+      if (card.dataset.online === 'true') {
+        btnText.textContent = '切换为离线';
+      } else {
+        btnText.textContent = '切换为上线';
+      }
+    }
+  });
+}
+
+</script>
+{% endblock %}
