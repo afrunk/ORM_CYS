@@ -160,8 +160,8 @@ def create_app() -> Flask:
     app.config["MAIL_PORT"] = 587
     app.config["MAIL_USE_TLS"] = True
     # 使用环境变量或默认配置
-    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "afrunk@foxmail.com")
-    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "wkqrgooalktzjjic")
+    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "1740384737@qq.com")
+    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "qjmdzxiemteqeaad")
     app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
 
     # 初始化扩展

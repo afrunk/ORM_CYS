@@ -301,7 +301,9 @@ def _assign_public_pool_to_sales(sales_user: User, limit: int | None = None) -> 
     return assigned
 
 
-def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
+def run_auto_dispatch_unassigned(
+    single_customer_id: int | None = None,
+) -> tuple[int, User | None, Customer | None]:
     """对所有（或指定）未分配客户按地区和派单序号进行系统派单。
 
     规则：
@@ -309,6 +311,11 @@ def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
     - 按地区分组；每个地区内按 dispatch_order 轮询，每轮每个销售最多 1 单
     - 同一地区内优先把新单派给「最久没有接过单」的销售，保证轮询公平
     - 某地区没有任何可用销售时，该地区客户进入公海（status='public_pool'）
+
+    Returns:
+        assigned_count: 本次指派的客户数量
+        assigned_sales: 若有指派，返回被指派的销售用户（仅针对 single_customer_id 场景）
+        assigned_customer: 若有指派，返回被指派的客户（仅针对 single_customer_id 场景）
     """
     now = datetime.utcnow()
 
@@ -321,7 +328,7 @@ def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
 
     unassigned_customers = base_query.order_by(Customer.region.asc(), Customer.id.asc()).all()
     if not unassigned_customers:
-        return 0
+        return 0, None, None
 
     # 按地区分组
     region_map: dict[str | None, list[Customer]] = {}
@@ -329,6 +336,8 @@ def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
         region_map.setdefault(c.region, []).append(c)
 
     assigned_count = 0
+    assigned_sales_out: User | None = None
+    assigned_customer_out: Customer | None = None
 
     for region, customers in region_map.items():
         # 业务约束：客户必须有明确地区，且只能派给同地区销售
@@ -415,8 +424,11 @@ def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
                         customer,
                         f"[系统] 校验匹配：客户地区({customer.region}) == 销售地区({sales_region})，执行系统派单给 {sales_user.username}",
                     )
-                    send_assignment_notification(sales_user, customer)
                     assigned_count += 1
+                    # 仅记录 single_customer_id 场景的返回值
+                    if single_customer_id is not None:
+                        assigned_sales_out = sales_user
+                        assigned_customer_out = customer
                 else:
                     # 理论上不会到这里，如出现则直接进入公海，避免跨区误派
                     customer.status = "public_pool"
@@ -427,7 +439,7 @@ def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
                     )
 
     db.session.commit()
-    return assigned_count
+    return assigned_count, assigned_sales_out, assigned_customer_out
 
 
 def _apply_customer_filters(query, current_user: User):
@@ -1157,9 +1169,14 @@ def customer_create():
         # 如果系统派单开启且本次没有手动指定销售，则尝试立即为这个客户自动派单
         if system_dispatch_enabled and not assigned_sales:
             from .routes import run_auto_dispatch_unassigned  # 规避循环导入
-            run_auto_dispatch_unassigned(single_customer_id=customer.id)
-
-        if assigned_sales:
+            assigned_count, auto_sales, auto_customer = run_auto_dispatch_unassigned(
+                single_customer_id=customer.id
+            )
+            # 立即发邮件（同一事务内完成，无延迟）
+            if auto_sales and auto_customer:
+                send_assignment_notification(auto_sales, auto_customer)
+        elif assigned_sales:
+            # 手动选销售：立即发邮件
             send_assignment_notification(assigned_sales, customer)
 
         flash("客户录入成功。", "success")

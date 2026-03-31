@@ -365,7 +365,8 @@ def toggle_system_dispatch():
     # 如果开启系统派单，顺便对当前未分配客户跑一轮自动派单
     dispatched_count = 0
     if enabled:
-        dispatched_count = run_auto_dispatch_unassigned()
+        result = run_auto_dispatch_unassigned()
+        dispatched_count = result[0]
 
     if request.headers.get("X-Requested-With") == "XMLHttpRequest" or request.is_json:
         return jsonify(

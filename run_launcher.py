@@ -24,9 +24,9 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 # ============ 配置 ============
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 5000
-CHECK_INTERVAL = 30          # 健康检查间隔（秒）
+CHECK_INTERVAL = 300          # 健康检查间隔（秒）
 HEALTH_ENDPOINT = f"http://{HOST}:{PORT}/login"  # 使用登录页作为存活检查
 KILL_WAIT = 3               # 杀掉进程后等待秒数再重启
 LAUNCHER_LOG = os.path.join(os.path.dirname(__file__), "logs", "launcher.log")

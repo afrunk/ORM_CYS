@@ -47,4 +47,3 @@ htmlcov/
 *.tmp
 *.bak
 test_email.py
-
