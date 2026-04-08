@@ -76,12 +76,10 @@ def stats_index():
                 start_dt = _to_utc_naive(start_dt_raw)
             if end:
                 end_dt_raw = datetime.fromisoformat(end)
-                # 如果只有日期和时间，没有秒，添加秒
-                if len(end) == 16:  # YYYY-MM-DDTHH:mm
-                    end_dt_raw = end_dt_raw.replace(second=59)
-                else:
-                    # 如果已经有秒，确保是59秒
-                    end_dt_raw = end_dt_raw.replace(second=59)
+                # 如果是 T00:00（即只有日期没有时间），扩展为 T23:59:59
+                # 这符合"截止到某日"的业务语义
+                if end_dt_raw.hour == 0 and end_dt_raw.minute == 0 and end_dt_raw.second == 0:
+                    end_dt_raw = end_dt_raw.replace(hour=23, minute=59, second=59, microsecond=999999)
                 end_dt = _to_utc_naive(end_dt_raw)
         except ValueError:
             start_dt = end_dt = None
@@ -108,7 +106,7 @@ def stats_index():
         filters_dispatched.append(Customer.dispatch_time <= end_dt)
 
     # 录入统计（按 creator_id）
-    # 同时统计该运营录入的有效/无效订单数（基于 Customer.is_valid 字段）
+    # 录入数量使用 created_at 过滤，排除未设置时间的异常数据
     data_entry_stats = (
         db.session.query(
             User.id,
@@ -122,12 +120,12 @@ def stats_index():
             ).label("invalid_count"),
         )
         .join(Customer, Customer.creator_id == User.id)
-        .filter(*filters_created)
+        .filter(Customer.created_at.isnot(None), *filters_created)
         .group_by(User.id, User.username)
         .all()
     )
 
-    # 销售接单统计
+    # 销售接单统计（仅统计已接单且有接单时间的客户）
     sales_accept_stats = (
         db.session.query(
             User.id,
@@ -137,12 +135,12 @@ def stats_index():
             func.sum(case((Customer.is_valid.is_(False), 1), else_=0)).label("invalid_count"),
         )
         .join(Customer, Customer.sales_id == User.id)
-        .filter(Customer.status == "accepted", *filters_accepted)
+        .filter(Customer.status == "accepted", Customer.accepted_time.isnot(None), *filters_accepted)
         .group_by(User.id, User.username)
         .all()
     )
 
-    # 销售转化统计
+    # 销售转化统计（仅统计已转化且有接单时间的客户）
     sales_conversion_stats = (
         db.session.query(
             User.id,
@@ -150,7 +148,7 @@ def stats_index():
             func.count(Customer.id).label("converted_count"),
         )
         .join(Customer, Customer.sales_id == User.id)
-        .filter(Customer.is_converted.is_(True), *filters_accepted)
+        .filter(Customer.is_converted.is_(True), Customer.accepted_time.isnot(None), *filters_accepted)
         .group_by(User.id, User.username)
         .all()
     )
@@ -440,10 +438,9 @@ def operator_detail(user_id):
                 start_dt = _to_utc_naive(start_dt_raw)
             if end:
                 end_dt_raw = datetime.fromisoformat(end)
-                if len(end) == 16:
-                    end_dt_raw = end_dt_raw.replace(second=59)
-                else:
-                    end_dt_raw = end_dt_raw.replace(second=59)
+                # 如果是 T00:00，扩展为 T23:59:59
+                if end_dt_raw.hour == 0 and end_dt_raw.minute == 0 and end_dt_raw.second == 0:
+                    end_dt_raw = end_dt_raw.replace(hour=23, minute=59, second=59, microsecond=999999)
                 end_dt = _to_utc_naive(end_dt_raw)
         except ValueError:
             start_dt = end_dt = None
