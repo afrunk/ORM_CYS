@@ -547,7 +547,7 @@ def _apply_customer_filters(query, current_user: User):
     # 如果指定了快捷 preset，则优先按快捷时间计算（忽略手动时间输入）
     if preset:
         if preset == "today":
-            # “今天”按业务定义的班次窗口：前一日18:00~当前18:00，或当前18:00~次日18:00（北京时区）
+            # "今天"按正常24小时制统计：北京时间 00:00:00 ~ 23:59:59
             start_dt, end_dt = get_shift_window_utc(now_utc=now)
         elif preset == "yesterday":
             start_dt, end_dt = get_yesterday_window_utc(now)
@@ -578,7 +578,7 @@ def _apply_customer_filters(query, current_user: User):
             )
             return query
 
-    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（最近一个18:00~现在，北京时间）
+    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（北京时间 00:00 ~ 23:59）
     if not start_date and not end_date and not start and not end and not preset:
         start_dt, end_dt = get_shift_window_utc()
         # 对于已分配的客户，按派单时间筛选；对于未分配的客户，按创建时间筛选
@@ -893,7 +893,7 @@ def customer_list():
 @customer_bp.route("/summary/today-created-count")
 @login_required
 def today_created_count():
-    """返回当前时间窗口内（最近一个18:00~现在）的新增客户总量（按 created_at）。
+    """返回当天（北京时间 00:00 ~ 23:59）的新增客户总量（按 created_at）。
 
     说明：
     - 这里统计的是「系统内所有客户」的新增数量

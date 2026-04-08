@@ -50,7 +50,7 @@ def stats_index():
     # 如果指定了快捷 preset，则优先按快捷时间计算（忽略手动时间输入）
     if preset:
         if preset == "today":
-            # "今天"按业务定义的班次窗口：前一日18:00~当前18:00，或当前18:00~次日18:00（北京时区）
+            # "今天"按正常24小时制统计：北京时间 00:00:00 ~ 23:59:59
             start_dt, end_dt = get_shift_window_utc(now_utc=now)
         elif preset == "yesterday":
             start_dt, end_dt = get_yesterday_window_utc(now_utc=now)
@@ -391,7 +391,7 @@ def stats_index():
 @roles_required(["super_admin", "data_entry"])
 def operator_detail(user_id):
     """
-    显示指定运营在当前统计时间窗口（同 stats_index 的时间判定：以北京时间 18:00 为班次分界）
+    显示指定运营在当前统计时间窗口（同 stats_index 的时间判定：以北京时间 00:00 为起始）
     的录入明细（仅当天窗口 / 或按查询参数 start/end/preset）。
     """
     start = request.args.get("start")
@@ -448,7 +448,7 @@ def operator_detail(user_id):
         except ValueError:
             start_dt = end_dt = None
 
-    # 默认使用班次窗口
+    # 默认使用当天窗口
     if not start_dt and not end_dt and not preset:
         start_dt, end_dt = get_shift_window_utc(now_utc=now)
 
