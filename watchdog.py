@@ -327,7 +327,7 @@ class FlaskWatcher:
                     log(f"[READY] 服务器返回错误码: {resp.status_code}", "WARNING")
             except requests.exceptions.Timeout:
                 log("[READY] 连接超时 (5秒)，继续等待...")
-            except requests.exceptions.ConnectionRefusedError:
+            except ConnectionRefusedError:
                 log("[READY] 连接被拒绝，Flask 尚未开始监听...")
             except requests.exceptions.RequestException as e:
                 log(f"[READY] 请求异常: {type(e).__name__} - {e}", "WARNING")
@@ -345,7 +345,7 @@ class FlaskWatcher:
         except requests.exceptions.Timeout:
             log("[HEALTH] 健康检查超时 (5秒)", "WARNING")
             return False
-        except requests.exceptions.ConnectionRefusedError:
+        except ConnectionRefusedError:
             log("[HEALTH] 连接被拒绝", "WARNING")
             return False
         except requests.exceptions.RequestException:
