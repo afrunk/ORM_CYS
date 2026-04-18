@@ -100,10 +100,6 @@ class Customer(db.Model):
     remark = db.Column(db.Text)
     retry_count = db.Column(db.Integer, default=0, nullable=False)  # 重派次数
 
-    # 业务展示用月度序号（北京自然月内从 1 递增，新月份重置）
-    monthly_order_ym = db.Column(db.String(6), nullable=True, index=True)  # YYYYMM
-    monthly_order_key = db.Column(db.Integer, nullable=True)
-
     sales = db.relationship("User", foreign_keys=[sales_id], back_populates="owned_customers")
     operator = db.relationship("User", foreign_keys=[operator_id])
     dispatcher = db.relationship(
@@ -116,21 +112,6 @@ class Customer(db.Model):
     notifications = db.relationship(
         "Notification", back_populates="customer", lazy="dynamic"
     )
-
-    @property
-    def monthly_display_id(self) -> str:
-        if self.monthly_order_ym and self.monthly_order_key is not None:
-            return f"{self.monthly_order_ym}-{self.monthly_order_key}"
-        return "—"
-
-
-class MonthlyCustomerSeq(db.Model):
-    """按北京 YYYYMM 维度的月度客户序号分配（与 Customer 月度字段一致）。"""
-
-    __tablename__ = "monthly_customer_seq"
-
-    ym = db.Column(db.String(6), primary_key=True)
-    last_seq = db.Column(db.Integer, nullable=False, default=0)
 
 
 class Notification(db.Model):

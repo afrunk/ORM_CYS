@@ -14,12 +14,6 @@ def login_required(view):
         if not session.get("user_id"):
             flash("请先登录系统。", "warning")
             return redirect(url_for("auth.login"))
-        # session 里可能有 user_id，但用户已删或库不一致时 g.current_user 会为 None
-        user = getattr(g, "current_user", None)
-        if user is None:
-            session.pop("user_id", None)
-            flash("登录已失效，请重新登录。", "warning")
-            return redirect(url_for("auth.login"))
         return view(*args, **kwargs)
 
     return wrapped_view

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}客户详情 {{ customer.monthly_display_id }} - 客户管理系统{% endblock %}
+{% block title %}客户详情 #{{ customer.id }} - 客户管理系统{% endblock %}
 
-{% block page_title %}客户详情 {{ customer.monthly_display_id }}{% endblock %}
+{% block page_title %}客户详情 #{{ customer.id }}{% endblock %}
 
 {% block page_header %}
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-  <h1 class="h2">客户详情 {{ customer.monthly_display_id }}</h1>
+  <h1 class="h2">客户详情 #{{ customer.id }}</h1>
   <a href="{{ url_for('customer.customer_list') }}" class="btn-action">
     <i class="bi-arrow-left"></i> 返回列表
   </a>

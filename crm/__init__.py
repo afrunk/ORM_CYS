@@ -2,121 +2,10 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
-from logging.handlers import RotatingFileHandler
 
 from flask import Flask
 
 from .extensions import db
-
-
-def _migrate_schema(app: Flask) -> None:
-    """增量迁移：给已有表添加新字段（幂等，安全重复调用）。
-
-    仅在首次部署或表结构变更时生效，不影响已有数据。
-    """
-    from sqlalchemy import inspect, text
-
-    with app.app_context():
-        inspector = inspect(db.engine)
-        table_names = inspector.get_table_names()
-
-        # --- users 表 ---
-        if "users" in table_names:
-            columns = [c["name"] for c in inspector.get_columns("users")]
-            for field, col_type in [
-                ("temp_password", "VARCHAR(128)"),
-                ("phone", "VARCHAR(32)"),
-                ("email", "VARCHAR(128)"),
-            ]:
-                if field not in columns:
-                    try:
-                        db.session.execute(text(f"ALTER TABLE users ADD COLUMN {field} {col_type}"))
-                        db.session.commit()
-                        app.logger.info(f"[迁移] 已添加字段 users.{field}")
-                    except Exception:
-                        db.session.rollback()
-
-        # --- customers 表 ---
-        if "customers" in table_names:
-            customer_columns = [c["name"] for c in inspector.get_columns("customers")]
-            if "operator_id" not in customer_columns:
-                try:
-                    db.session.execute(text("ALTER TABLE customers ADD COLUMN operator_id INTEGER"))
-                    db.session.commit()
-                    app.logger.info("[迁移] 已添加字段 customers.operator_id")
-                except Exception:
-                    db.session.rollback()
-
-            for field, col_type in [
-                ("monthly_order_ym", "VARCHAR(6)"),
-                ("monthly_order_key", "INTEGER"),
-            ]:
-                if field not in customer_columns:
-                    try:
-                        db.session.execute(
-                            text(f"ALTER TABLE customers ADD COLUMN {field} {col_type}")
-                        )
-                        db.session.commit()
-                        app.logger.info(f"[迁移] 已添加字段 customers.{field}")
-                    except Exception:
-                        db.session.rollback()
-                    customer_columns.append(field)
-
-        # --- 确保 ORM 中新增的表（如 monthly_customer_seq）已创建 ---
-        try:
-            from .models import MonthlyCustomerSeq  # noqa: F401 — 注册到 metadata
-
-            db.create_all()
-        except Exception:
-            db.session.rollback()
-
-        # --- 回填客户月度编号（仅当有旧数据缺字段时执行，幂等） ---
-        try:
-            from .utils.monthly_order import backfill_customer_monthly_ids_if_needed
-
-            backfill_customer_monthly_ids_if_needed(app)
-        except Exception:
-            app.logger.exception("[迁移] 客户月度编号回填失败，请检查数据库；旧数据可能暂显示为 —")
-
-        # --- regions 表（可能尚未创建） ---
-        if "regions" not in table_names:
-            try:
-                from .models import Region
-                db.create_all()
-                app.logger.info("[迁移] 已创建 regions 表")
-            except Exception:
-                pass
-
-        app.logger.info("[迁移] 数据库结构检查完成")
-
-
-def _ensure_superadmin(app: Flask) -> None:
-    """确保数据库已创建且 superadmin 账号存在（幂等，安全重复调用）。
-
-    在 create_app() 阶段调用，无需额外手动命令；
-    所有逻辑走 db session，回滚可靠。
-    """
-    from werkzeug.security import generate_password_hash
-    from .models import User
-
-    with app.app_context():
-        db.create_all()
-        _migrate_schema(app)
-
-        existing = User.query.filter_by(role="super_admin").first()
-        if not existing:
-            super_user = User(
-                username="superadmin",
-                password_hash=generate_password_hash("superadmin123"),
-                role="super_admin",
-                is_active=True,
-                temp_password="superadmin123",
-            )
-            db.session.add(super_user)
-            db.session.commit()
-            app.logger.info("✓ 已创建默认超级管理员：superadmin / superadmin123")
-        else:
-            app.logger.info("✓ 超级管理员已存在，跳过初始化")
 
 
 def create_app() -> Flask:
@@ -135,22 +24,19 @@ def create_app() -> Flask:
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///crm.db"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-    # 日志滚动配置：单个日志最大 10MB，保留 5 个历史文件
-    _configure_rotating_log(app)
-
-    # SQLAlchemy 连接池配置（适配 200 人并发）
-    # pool_size=50 基础连接，max_overflow=100 峰值额外连接，共 150 并发上限
-    # pool_recycle=3600 每小时回收防 MySQL/PostgreSQL 断连
-    # pool_pre_ping=True 每次借出前 ping，保证断连不被误用
-    # pool_timeout=30 等待连接超时报错而非无限阻塞
+    # SQLAlchemy 连接池配置（生产环境建议在环境变量或实例配置中覆盖）
+    # 注：如果在服务器上使用 MySQL / PostgreSQL，这些参数同样会生效
     app.config.setdefault(
         "SQLALCHEMY_ENGINE_OPTIONS",
         {
-            "pool_size": 50,
-            "max_overflow": 100,
-            "pool_recycle": 3600,
+            # 基础连接池大小
+            "pool_size": 20,
+            # 允许的额外连接数（超过 pool_size 后临时创建）
+            "max_overflow": 40,
+            # 在每次借出连接前执行 ping，防止“断开但池子不知情”的连接导致报错
             "pool_pre_ping": True,
-            "pool_timeout": 30,
+            # 定期回收连接，单位秒（这里为 30 分钟）
+            "pool_recycle": 1800,
         },
     )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
@@ -160,8 +46,8 @@ def create_app() -> Flask:
     app.config["MAIL_PORT"] = 587
     app.config["MAIL_USE_TLS"] = True
     # 使用环境变量或默认配置
-    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "1740384737@qq.com")
-    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "qjmdzxiemteqeaad")
+    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "afrunk@foxmail.com")
+    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "sgcwkqlwirfcdiij")
     app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
 
     # 初始化扩展
@@ -183,29 +69,6 @@ def create_app() -> Flask:
     app.register_blueprint(customer_bp, url_prefix="/customers")
     app.register_blueprint(stats_bp, url_prefix="/stats")
 
-    # 每个请求前从 session 中加载当前用户（应用级别钩子，确保所有路由都能访问 g.current_user）
-    from flask import g, session
-    from .models import User
-
-    @app.before_request
-    def load_logged_in_user():
-        user_id = session.get("user_id")
-        if not user_id:
-            g.current_user = None
-            return
-        user = User.query.get(user_id)
-        if user is None or not user.is_active:
-            # 避免「session 有效但用户不存在/已停用」导致 g.current_user 为 None 却通过 login_required
-            session.pop("user_id", None)
-            g.current_user = None
-            return
-        g.current_user = user
-
-    @app.teardown_appcontext
-    def shutdown_session(exception=None):
-        """每个请求结束后强制关闭 Session，防止连接泄露。"""
-        db.session.remove()
-
     # 上下文处理：注入当前用户
     @app.context_processor
     def inject_user():
@@ -223,17 +86,27 @@ def create_app() -> Flask:
         beijing_time = dt + timedelta(hours=8)
         return beijing_time
 
-    # 注册 CLI 命令之前，先确保数据库和超管已初始化（幂等操作）
-    _ensure_superadmin(app)
-
-    # CLI 命令：手动触发初始化（覆盖已存在行为）
+    # CLI 命令：初始化数据库并创建一个超级管理员
     @app.cli.command("init-db")
     def init_db_command():
-        """初始化数据库并创建默认超级管理员账户（手动触发版）。"""
+        """初始化数据库并创建默认超级管理员账户。"""
         from click import echo
+        from werkzeug.security import generate_password_hash
+        from .models import User
 
-        _ensure_superadmin(app)
-        echo("✓ 数据库初始化完成（详见上方日志）")
+        db.create_all()
+        if not User.query.filter_by(role="super_admin").first():
+            super_user = User(
+                username="superadmin",
+                password_hash=generate_password_hash("superadmin123"),
+                role="super_admin",
+                is_active=True,
+            )
+            db.session.add(super_user)
+            db.session.commit()
+            echo("已创建默认超级管理员：superadmin / superadmin123")
+        else:
+            echo("超级管理员已存在，无需重复初始化。")
 
     # CLI 命令：清空数据库并创建指定超管（危险操作）
     @app.cli.command("reset-db-and-superadmin")
@@ -306,9 +179,105 @@ def create_app() -> Flask:
     def migrate_db_command():
         """迁移数据库，添加缺失字段。"""
         from click import echo
+        from sqlalchemy import inspect, text
 
-        _migrate_schema(app)
-        echo("✓ 数据库迁移完成（详见上方日志）")
+        with app.app_context():
+            inspector = inspect(db.engine)
+            columns = [col['name'] for col in inspector.get_columns('users')]
+            
+            # 检查并添加 temp_password 字段
+            if 'temp_password' not in columns:
+                try:
+                    db.session.execute(text("ALTER TABLE users ADD COLUMN temp_password VARCHAR(128)"))
+                    db.session.commit()
+                    echo("[OK] 已添加 temp_password 字段到 users 表")
+                except Exception as e:
+                    db.session.rollback()
+                    echo(f"[ERROR] 添加 temp_password 字段失败：{e}")
+            else:
+                echo("[OK] temp_password 字段已存在，无需添加")
+            
+            # 检查并添加 phone 字段
+            if 'phone' not in columns:
+                try:
+                    db.session.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(32)"))
+                    db.session.commit()
+                    echo("[OK] 已添加 phone 字段到 users 表")
+                except Exception as e:
+                    db.session.rollback()
+                    echo(f"[ERROR] 添加 phone 字段失败：{e}")
+            else:
+                echo("[OK] phone 字段已存在，无需添加")
+            
+            # 检查并添加 email 字段
+            if 'email' not in columns:
+                try:
+                    db.session.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(128)"))
+                    db.session.commit()
+                    echo("[OK] 已添加 email 字段到 users 表")
+                except Exception as e:
+                    db.session.rollback()
+                    echo(f"[ERROR] 添加 email 字段失败：{e}")
+            else:
+                echo("[OK] email 字段已存在，无需添加")
+            
+            # 检查 customers 表的字段
+            try:
+                customer_columns = [col['name'] for col in inspector.get_columns('customers')]
+                
+                # 检查并添加 operator_id 字段
+                if 'operator_id' not in customer_columns:
+                    try:
+                        db.session.execute(text("ALTER TABLE customers ADD COLUMN operator_id INTEGER"))
+                        db.session.commit()
+                        echo("[OK] 已添加 operator_id 字段到 customers 表")
+                    except Exception as e:
+                        db.session.rollback()
+                        echo(f"[ERROR] 添加 operator_id 字段失败：{e}")
+                else:
+                    echo("[OK] operator_id 字段已存在，无需添加")
+            except Exception as e:
+                echo(f"[WARN] 检查 customers 表时出错：{e}（可能表不存在，将在初始化时创建）")
+            
+            # 检查并创建 regions 表
+            table_names = inspector.get_table_names()
+            if 'regions' not in table_names:
+                try:
+                    from .models import Region
+                    db.create_all()
+                    echo("[OK] 已创建 regions 表")
+                except Exception as e:
+                    db.session.rollback()
+                    echo(f"[ERROR] 创建 regions 表失败：{e}")
+            else:
+                echo("[OK] regions 表已存在，无需创建")
+            
+            # 为现有用户初始化 temp_password（如果为空）
+            from .models import User
+            users_without_temp_password = User.query.filter(
+                (User.temp_password.is_(None)) | (User.temp_password == "")
+            ).all()
+            
+            if users_without_temp_password:
+                echo(f"\n发现 {len(users_without_temp_password)} 个用户的 temp_password 为空，正在初始化...")
+                for user in users_without_temp_password:
+                    # 对于 superadmin，使用默认密码 superadmin123
+                    if user.username == "superadmin" and user.role == "super_admin":
+                        user.temp_password = "superadmin123"
+                        echo(f"  [OK] 已为 superadmin 设置默认密码到 temp_password")
+                    else:
+                        # 对于其他用户，设置为提示文本（用户需要手动编辑设置密码）
+                        user.temp_password = None  # 保持为空，用户需要手动编辑
+                try:
+                    db.session.commit()
+                    echo("[OK] 现有用户的 temp_password 初始化完成")
+                except Exception as e:
+                    db.session.rollback()
+                    echo(f"[ERROR] 初始化 temp_password 失败：{e}")
+            else:
+                echo("[OK] 所有用户的 temp_password 都已设置")
+            
+            echo("\n数据库迁移完成！")
 
     # CLI 命令：初始化现有用户的 temp_password
     @app.cli.command("init-temp-passwords")
@@ -412,8 +381,6 @@ def create_app() -> Flask:
                     "invalid_proof_image": c.invalid_proof_image,
                     "remark": c.remark,
                     "retry_count": c.retry_count,
-                    "monthly_order_ym": c.monthly_order_ym,
-                    "monthly_order_key": c.monthly_order_key,
                 }
                 for c in Customer.query.order_by(Customer.id.asc()).all()
             ]
@@ -491,8 +458,6 @@ def create_app() -> Flask:
                     invalid_proof_image=c["invalid_proof_image"],
                     remark=c["remark"],
                     retry_count=c["retry_count"],
-                    monthly_order_ym=c.get("monthly_order_ym"),
-                    monthly_order_key=c.get("monthly_order_key"),
                 )
                 if c["created_at"]:
                     customer.created_at = c["created_at"]
@@ -512,49 +477,12 @@ def create_app() -> Flask:
                     record.created_at = n["created_at"]
                 db.session.add(record)
 
-            echo("→ 同步客户月度计数表...")
-            from .utils.monthly_order import sync_monthly_seq_counters_from_customers
-
-            sync_monthly_seq_counters_from_customers(db.session)
-
             db.session.commit()
             echo(
                 f"✓ 租户结构重建完成：{len(users_payload)} 个用户、{len(customers_payload)} 条客户、{len(notifications_payload)} 条通知已保留。"
             )
 
     return app
-
-
-def _configure_rotating_log(app: Flask) -> None:
-    """配置日志滚动：单文件最大 10MB，保留 5 个历史文件。"""
-    import logging
-
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "app.log")
-
-    handler = RotatingFileHandler(
-        filename=log_path,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
-        encoding="utf-8",
-    )
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-
-    # 同时输出到控制台（保持原行为）
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-
-    app.logger.handlers.clear()
-    app.logger.addHandler(handler)
-    app.logger.addHandler(console_handler)
-    app.logger.setLevel(logging.INFO)
 
 
 def _init_scheduler(app: Flask) -> None:

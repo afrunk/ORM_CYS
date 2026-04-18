@@ -29,3 +29,37 @@ if __name__ == "__main__":
     # 对外开放 8000 端口
     app.run(host="0.0.0.0", port=5000, debug=False)
 
+# python -m flask --app app run --debug 
+# source venv/bin/activate
+# superadmin / superadmin123
+# nohup python3 app.py > app.log 2>&1 &
+
+# pkill -f "python3 app.py"
+# pkill -f "python app.py"
+
+# python -m flask --app app run --debug 
+# source venv/bin/activate
+# superadmin / superadmin123
+
+# wins .\.venv\Scripts\activate.bat
+# python -m flask --app app reset-db-and-superadmin 
+# 更新数据库 密码是 echo echo123
+
+
+# D:\Code\2025\ORM\ORM_final\crm\__init__.py
+# app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME", "afrunk@foxmail.com")
+# app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD", "sgcwkqlwirfcdiij")
+# app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
+
+
+
+# apt install -y python3-venv
+# python3 -m venv .venv
+# source .venv/bin/activate      222
+
+
+'''
+source .venv/bin/activate
+pkill -f "python3 app.py"  # 或类似命令先停旧进程
+nohup python3 app.py > app.log 2>&1 &
+'''

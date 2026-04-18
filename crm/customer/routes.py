@@ -24,7 +24,6 @@ from ..models import Customer, SalesProfile, User, Region, Notification
 from ..notifications import send_assignment_notification
 from ..permissions import login_required
 from ..utils.images import ensure_thumbnail, ensure_preview, remove_preview, remove_thumbnail
-from ..utils.monthly_order import assign_monthly_order_fields
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
 customer_bp = Blueprint("customer", __name__, template_folder="../templates")
@@ -301,9 +300,7 @@ def _assign_public_pool_to_sales(sales_user: User, limit: int | None = None) -> 
     return assigned
 
 
-def run_auto_dispatch_unassigned(
-    single_customer_id: int | None = None,
-) -> tuple[int, User | None, Customer | None]:
+def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
     """对所有（或指定）未分配客户按地区和派单序号进行系统派单。
 
     规则：
@@ -311,11 +308,6 @@ def run_auto_dispatch_unassigned(
     - 按地区分组；每个地区内按 dispatch_order 轮询，每轮每个销售最多 1 单
     - 同一地区内优先把新单派给「最久没有接过单」的销售，保证轮询公平
     - 某地区没有任何可用销售时，该地区客户进入公海（status='public_pool'）
-
-    Returns:
-        assigned_count: 本次指派的客户数量
-        assigned_sales: 若有指派，返回被指派的销售用户（仅针对 single_customer_id 场景）
-        assigned_customer: 若有指派，返回被指派的客户（仅针对 single_customer_id 场景）
     """
     now = datetime.utcnow()
 
@@ -328,7 +320,7 @@ def run_auto_dispatch_unassigned(
 
     unassigned_customers = base_query.order_by(Customer.region.asc(), Customer.id.asc()).all()
     if not unassigned_customers:
-        return 0, None, None
+        return 0
 
     # 按地区分组
     region_map: dict[str | None, list[Customer]] = {}
@@ -336,8 +328,6 @@ def run_auto_dispatch_unassigned(
         region_map.setdefault(c.region, []).append(c)
 
     assigned_count = 0
-    assigned_sales_out: User | None = None
-    assigned_customer_out: Customer | None = None
 
     for region, customers in region_map.items():
         # 业务约束：客户必须有明确地区，且只能派给同地区销售
@@ -424,11 +414,8 @@ def run_auto_dispatch_unassigned(
                         customer,
                         f"[系统] 校验匹配：客户地区({customer.region}) == 销售地区({sales_region})，执行系统派单给 {sales_user.username}",
                     )
+                    send_assignment_notification(sales_user, customer)
                     assigned_count += 1
-                    # 仅记录 single_customer_id 场景的返回值
-                    if single_customer_id is not None:
-                        assigned_sales_out = sales_user
-                        assigned_customer_out = customer
                 else:
                     # 理论上不会到这里，如出现则直接进入公海，避免跨区误派
                     customer.status = "public_pool"
@@ -439,7 +426,7 @@ def run_auto_dispatch_unassigned(
                     )
 
     db.session.commit()
-    return assigned_count, assigned_sales_out, assigned_customer_out
+    return assigned_count
 
 
 def _apply_customer_filters(query, current_user: User):
@@ -861,13 +848,10 @@ def customer_list():
 def today_created_count():
     """返回当前时间窗口内（最近一个18:00~现在）的新增客户总量（按 created_at）。
 
-    仅超级管理员与数据员可查看全系统汇总；运营与销售不应调用此接口。
+    说明：
+    - 这里统计的是「系统内所有客户」的新增数量
+    - 不再根据当前用户角色做任何过滤（运营 / 管理员 / 销售看到的都是同一个总数）
     """
-    current = g.current_user
-    if current is None:
-        return jsonify({"success": False, "error": "未登录"}), 401
-    if current.role not in ("super_admin", "data_entry"):
-        return jsonify({"success": False, "error": "无权查看"}), 403
 
     start_dt, end_dt = get_shift_window_utc()
 
@@ -886,18 +870,41 @@ def today_created_count():
 @customer_bp.route("/summary/region-stats")
 @login_required
 def region_stats():
-    """按角色返回列表页摘要数据。
-
-    - 超级管理员 / 数据员：全系统按地区新增统计（view=full）
-    - 运营：本班次录入排名 + 接单排名（view=rankings），不含全系统汇总
-    - 销售：仅本人接单数（view=personal）
+    """返回按地区统计的新增客户数量，以及当前用户的接单/上传数量。
+    
+    对于销售：返回每个地区的新增客户数量 + 当前销售自己的接单数量
+    对于运营：返回每个地区的新增客户数量 + 运营自己的上传客户数量
     """
     current = g.current_user
-    if current is None:
-        return jsonify({"success": False, "error": "未登录"}), 401
     start_dt, end_dt = get_shift_window_utc()
-
+    
+    # 按地区统计新增客户数量
+    region_counts = (
+        db.session.query(
+            Customer.region,
+            func.count(Customer.id).label('count')
+        )
+        .filter(
+            Customer.created_at >= start_dt,
+            Customer.created_at <= end_dt,
+            Customer.region.isnot(None),
+            Customer.region != ""
+        )
+        .group_by(Customer.region)
+        .all()
+    )
+    
+    region_stats_list = [
+        {"region": region, "count": int(count)}
+        for region, count in region_counts
+    ]
+    
+    # 根据角色统计个人数据
+    personal_count = 0
+    personal_label = ""
+    
     if current.role == "sales":
+        # 销售：统计自己的接单数量（按 accepted_time）
         personal_count = (
             Customer.query.filter(
                 Customer.sales_id == current.id,
@@ -907,85 +914,26 @@ def region_stats():
             .with_entities(func.count(Customer.id))
             .scalar()
         )
-        return jsonify(
-            {
-                "success": True,
-                "view": "personal",
-                "personal_count": int(personal_count or 0),
-                "personal_label": "我的接单数量",
-            }
-        )
-
-    if current.role == "operator":
-        entry_rows = (
-            db.session.query(User.username, func.count(Customer.id).label("cnt"))
-            .join(Customer, Customer.creator_id == User.id)
-            .filter(
+        personal_label = "我的接单数量"
+    elif current.role == "operator":
+        # 运营：统计自己的上传客户数量（按 created_at）
+        personal_count = (
+            Customer.query.filter(
+                Customer.creator_id == current.id,
                 Customer.created_at >= start_dt,
                 Customer.created_at <= end_dt,
             )
-            .group_by(User.id, User.username)
-            .order_by(func.count(Customer.id).desc())
-            .limit(20)
-            .all()
+            .with_entities(func.count(Customer.id))
+            .scalar()
         )
-        sales_rows = (
-            db.session.query(User.username, func.count(Customer.id).label("cnt"))
-            .join(Customer, Customer.sales_id == User.id)
-            .filter(
-                Customer.status == "accepted",
-                Customer.accepted_time >= start_dt,
-                Customer.accepted_time <= end_dt,
-            )
-            .group_by(User.id, User.username)
-            .order_by(func.count(Customer.id).desc())
-            .limit(20)
-            .all()
-        )
-        return jsonify(
-            {
-                "success": True,
-                "view": "rankings",
-                "entry_ranking": [
-                    {"username": u, "count": int(c)} for u, c in entry_rows
-                ],
-                "sales_ranking": [
-                    {"username": u, "count": int(c)} for u, c in sales_rows
-                ],
-            }
-        )
-
-    if current.role not in ("super_admin", "data_entry"):
-        return jsonify({"success": False, "error": "无权查看"}), 403
-
-    region_counts = (
-        db.session.query(
-            Customer.region,
-            func.count(Customer.id).label("count"),
-        )
-        .filter(
-            Customer.created_at >= start_dt,
-            Customer.created_at <= end_dt,
-            Customer.region.isnot(None),
-            Customer.region != "",
-        )
-        .group_by(Customer.region)
-        .all()
-    )
-
-    region_stats_list = [
-        {"region": region, "count": int(count)} for region, count in region_counts
-    ]
-
-    return jsonify(
-        {
-            "success": True,
-            "view": "full",
-            "region_stats": region_stats_list,
-            "personal_count": 0,
-            "personal_label": "",
-        }
-    )
+        personal_label = "我的上传数量"
+    
+    return jsonify({
+        "success": True,
+        "region_stats": region_stats_list,
+        "personal_count": int(personal_count or 0),
+        "personal_label": personal_label,
+    })
 
 
 @customer_bp.route("/sales/availability", methods=["POST"])
@@ -1077,53 +1025,30 @@ def customer_create():
                 flash("客户名称不能为空。", "danger")
                 return redirect(url_for("customer.customer_create"))
 
-        # 联系方式去重校验：
-        # 规则1：电话号码相同 → 重复
-        # 规则2：姓名 + 电话号码都相同 → 也算重复
+        # 联系方式去重校验：同一个号码只能录入一次（忽略前后空格）
         if phone:
-            name_stripped = (name or "").strip()
-            phone_stripped = phone.strip()
-
-            # 规则1：电话号码查重（已有逻辑，保持不变）
             existing = None
+            # 先用数据库函数快速查一遍，避免全表扫太多数据
             try:
                 existing = (
-                    Customer.query.filter(func.trim(Customer.phone) == phone_stripped)
+                    Customer.query.filter(func.trim(Customer.phone) == phone)
                     .order_by(Customer.id.desc())
                     .first()
                 )
             except Exception:
+                # 某些 SQLite 版本 / 数据里包含特殊空白符时，fallback 到 Python 侧判断
                 pass
 
             if not existing:
+                # 保险起见，再在 Python 侧做一次基于 strip() 的去重判断
                 for c in Customer.query.filter(Customer.phone.isnot(None)).all():
-                    if (c.phone or "").strip() == phone_stripped:
+                    if (c.phone or "").strip() == phone:
                         existing = c
                         break
 
-            # 规则2：姓名 + 电话同时查重
-            duplicate_by_name_phone = None
-            if existing is None and name_stripped:
-                for c in (
-                    Customer.query.filter(
-                        Customer.phone.isnot(None),
-                        Customer.name.isnot(None),
-                    ).all()
-                ):
-                    if (
-                        (c.phone or "").strip() == phone_stripped
-                        and (c.name or "").strip() == name_stripped
-                    ):
-                        duplicate_by_name_phone = c
-                        break
-
-            dup_target = existing or duplicate_by_name_phone
-            if dup_target:
-                dup_ref = dup_target.monthly_display_id
-                if dup_ref == "—":
-                    dup_ref = f"内部ID {dup_target.id}"
+            if existing:
                 flash(
-                    f"该客户已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复录入。",
+                    f"该联系方式已存在（客户ID：{existing.id}，姓名：{existing.name}），请勿重复录入。",
                     "danger",
                 )
                 return redirect(url_for("customer.customer_create"))
@@ -1160,7 +1085,6 @@ def customer_create():
             operator_id=operator_id if operator_id else (current.id if current.role == "operator" else None),
             status="unassigned",
         )
-        assign_monthly_order_fields(db.session, customer)
 
         assigned_sales = None
 
@@ -1189,14 +1113,9 @@ def customer_create():
         # 如果系统派单开启且本次没有手动指定销售，则尝试立即为这个客户自动派单
         if system_dispatch_enabled and not assigned_sales:
             from .routes import run_auto_dispatch_unassigned  # 规避循环导入
-            assigned_count, auto_sales, auto_customer = run_auto_dispatch_unassigned(
-                single_customer_id=customer.id
-            )
-            # 立即发邮件（同一事务内完成，无延迟）
-            if auto_sales and auto_customer:
-                send_assignment_notification(auto_sales, auto_customer)
-        elif assigned_sales:
-            # 手动选销售：立即发邮件
+            run_auto_dispatch_unassigned(single_customer_id=customer.id)
+
+        if assigned_sales:
             send_assignment_notification(assigned_sales, customer)
 
         flash("客户录入成功。", "success")
@@ -1287,59 +1206,6 @@ def customer_edit(customer_id: int):
 
         # 注意：编辑时不修改销售分配和运营人员
         # 销售分配应通过「待分配销售」tab 或重新派单功能完成
-
-        # 联系方式去重校验：编辑时不能把电话改成其他已有客户的电话
-        if customer.phone:
-            phone_stripped = customer.phone.strip()
-            name_stripped = (customer.name or "").strip()
-
-            # 规则1：电话号码查重（排除自己）
-            existing = None
-            try:
-                existing = (
-                    Customer.query.filter(
-                        Customer.id != customer.id,
-                        func.trim(Customer.phone) == phone_stripped,
-                    )
-                    .order_by(Customer.id.desc())
-                    .first()
-                )
-            except Exception:
-                pass
-
-            if not existing:
-                for c in Customer.query.filter(
-                    Customer.id != customer.id, Customer.phone.isnot(None)
-                ).all():
-                    if (c.phone or "").strip() == phone_stripped:
-                        existing = c
-                        break
-
-            # 规则2：姓名 + 电话同时查重（排除自己）
-            duplicate_by_name_phone = None
-            if existing is None and name_stripped:
-                for c in Customer.query.filter(
-                    Customer.id != customer.id,
-                    Customer.phone.isnot(None),
-                    Customer.name.isnot(None),
-                ).all():
-                    if (
-                        (c.phone or "").strip() == phone_stripped
-                        and (c.name or "").strip() == name_stripped
-                    ):
-                        duplicate_by_name_phone = c
-                        break
-
-            dup_target = existing or duplicate_by_name_phone
-            if dup_target:
-                dup_ref = dup_target.monthly_display_id
-                if dup_ref == "—":
-                    dup_ref = f"内部ID {dup_target.id}"
-                flash(
-                    f"该联系方式已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复。",
-                    "danger",
-                )
-                return redirect(url_for("customer.customer_edit", customer_id=customer.id))
 
         db.session.commit()
         flash("客户信息已更新。", "success")

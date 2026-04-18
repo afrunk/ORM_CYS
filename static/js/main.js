@@ -1,4 +1,4 @@
-document.addEventListener("DOMContentLoaded", function () {
+﻿document.addEventListener("DOMContentLoaded", function () {
   // 左侧黑色侧边栏控制
   var sidebar = document.getElementById("sidebarMenu");
   var sidebarToggle = document.getElementById("sidebarToggle");
@@ -109,17 +109,20 @@ document.addEventListener("DOMContentLoaded", function () {
     closeSidebar();
   }
 
-  // 移动端：点击主内容区的操作按钮时若侧栏仍打开则收起（勿在捕获阶段 stopPropagation，否则会拦截不到按钮上的 onclick）
-  document.addEventListener(
-    "click",
-    function (e) {
-      if (window.innerWidth > 768) return;
-      var btnAction = e.target.closest(".btn-action");
-      if (!btnAction || !sidebar || sidebar.classList.contains("collapsed")) return;
-      closeSidebar();
-    },
-    false
-  );
+  // 确保所有操作按钮（如添加按钮）的点击不会打开侧边栏
+  // 使用事件委托，确保动态添加的按钮也能生效
+  document.addEventListener("click", function(e) {
+    var currentIsMobile = window.innerWidth <= 768;
+    // 检查点击的是否是操作按钮
+    var btnAction = e.target.closest('.btn-action');
+    if (btnAction && currentIsMobile && sidebarManuallyClosed) {
+      e.stopPropagation();
+      // 如果侧边栏已手动关闭，确保点击按钮时不会打开
+      if (sidebar && !sidebar.classList.contains("collapsed")) {
+        closeSidebar();
+      }
+    }
+  }, true);
 
   // ESC 键关闭侧边栏
   document.addEventListener("keydown", function (event) {
