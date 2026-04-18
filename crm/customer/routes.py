@@ -1077,33 +1077,53 @@ def customer_create():
                 flash("客户名称不能为空。", "danger")
                 return redirect(url_for("customer.customer_create"))
 
-        # 联系方式去重校验：同一个号码只能录入一次（忽略前后空格）
+        # 联系方式去重校验：
+        # 规则1：电话号码相同 → 重复
+        # 规则2：姓名 + 电话号码都相同 → 也算重复
         if phone:
+            name_stripped = (name or "").strip()
+            phone_stripped = phone.strip()
+
+            # 规则1：电话号码查重（已有逻辑，保持不变）
             existing = None
-            # 先用数据库函数快速查一遍，避免全表扫太多数据
             try:
                 existing = (
-                    Customer.query.filter(func.trim(Customer.phone) == phone)
+                    Customer.query.filter(func.trim(Customer.phone) == phone_stripped)
                     .order_by(Customer.id.desc())
                     .first()
                 )
             except Exception:
-                # 某些 SQLite 版本 / 数据里包含特殊空白符时，fallback 到 Python 侧判断
                 pass
 
             if not existing:
-                # 保险起见，再在 Python 侧做一次基于 strip() 的去重判断
                 for c in Customer.query.filter(Customer.phone.isnot(None)).all():
-                    if (c.phone or "").strip() == phone:
+                    if (c.phone or "").strip() == phone_stripped:
                         existing = c
                         break
 
-            if existing:
-                dup_ref = existing.monthly_display_id
+            # 规则2：姓名 + 电话同时查重
+            duplicate_by_name_phone = None
+            if existing is None and name_stripped:
+                for c in (
+                    Customer.query.filter(
+                        Customer.phone.isnot(None),
+                        Customer.name.isnot(None),
+                    ).all()
+                ):
+                    if (
+                        (c.phone or "").strip() == phone_stripped
+                        and (c.name or "").strip() == name_stripped
+                    ):
+                        duplicate_by_name_phone = c
+                        break
+
+            dup_target = existing or duplicate_by_name_phone
+            if dup_target:
+                dup_ref = dup_target.monthly_display_id
                 if dup_ref == "—":
-                    dup_ref = f"内部ID {existing.id}"
+                    dup_ref = f"内部ID {dup_target.id}"
                 flash(
-                    f"该联系方式已存在（客户月度编号：{dup_ref}，姓名：{existing.name}），请勿重复录入。",
+                    f"该客户已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复录入。",
                     "danger",
                 )
                 return redirect(url_for("customer.customer_create"))
@@ -1267,6 +1287,59 @@ def customer_edit(customer_id: int):
 
         # 注意：编辑时不修改销售分配和运营人员
         # 销售分配应通过「待分配销售」tab 或重新派单功能完成
+
+        # 联系方式去重校验：编辑时不能把电话改成其他已有客户的电话
+        if customer.phone:
+            phone_stripped = customer.phone.strip()
+            name_stripped = (customer.name or "").strip()
+
+            # 规则1：电话号码查重（排除自己）
+            existing = None
+            try:
+                existing = (
+                    Customer.query.filter(
+                        Customer.id != customer.id,
+                        func.trim(Customer.phone) == phone_stripped,
+                    )
+                    .order_by(Customer.id.desc())
+                    .first()
+                )
+            except Exception:
+                pass
+
+            if not existing:
+                for c in Customer.query.filter(
+                    Customer.id != customer.id, Customer.phone.isnot(None)
+                ).all():
+                    if (c.phone or "").strip() == phone_stripped:
+                        existing = c
+                        break
+
+            # 规则2：姓名 + 电话同时查重（排除自己）
+            duplicate_by_name_phone = None
+            if existing is None and name_stripped:
+                for c in Customer.query.filter(
+                    Customer.id != customer.id,
+                    Customer.phone.isnot(None),
+                    Customer.name.isnot(None),
+                ).all():
+                    if (
+                        (c.phone or "").strip() == phone_stripped
+                        and (c.name or "").strip() == name_stripped
+                    ):
+                        duplicate_by_name_phone = c
+                        break
+
+            dup_target = existing or duplicate_by_name_phone
+            if dup_target:
+                dup_ref = dup_target.monthly_display_id
+                if dup_ref == "—":
+                    dup_ref = f"内部ID {dup_target.id}"
+                flash(
+                    f"该联系方式已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复。",
+                    "danger",
+                )
+                return redirect(url_for("customer.customer_edit", customer_id=customer.id))
 
         db.session.commit()
         flash("客户信息已更新。", "success")
