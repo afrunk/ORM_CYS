@@ -17,6 +17,7 @@ from flask import (
     jsonify,
 )
 from sqlalchemy import func, or_, and_
+from sqlalchemy.exc import IntegrityError
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
@@ -1184,7 +1185,12 @@ def customer_create():
             pass
 
         db.session.add(customer)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("该客户已存在（姓名+电话组合重复），请勿重复录入。", "danger")
+            return redirect(url_for("customer.customer_create"))
 
         # 如果系统派单开启且本次没有手动指定销售，则尝试立即为这个客户自动派单
         if system_dispatch_enabled and not assigned_sales:
@@ -1341,7 +1347,12 @@ def customer_edit(customer_id: int):
                 )
                 return redirect(url_for("customer.customer_edit", customer_id=customer.id))
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("该联系方式已存在（姓名+电话组合重复），请勿重复。", "danger")
+            return redirect(url_for("customer.customer_edit", customer_id=customer.id))
         flash("客户信息已更新。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 

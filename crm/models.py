@@ -70,6 +70,9 @@ class Customer(db.Model):
     """客户表，包含派单和销售反馈信息。"""
 
     __tablename__ = "customers"
+    __table_args__ = (
+        db.UniqueConstraint("name", "phone", name="uq_customer_name_phone"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
 

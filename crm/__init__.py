@@ -62,6 +62,22 @@ def _migrate_schema(app: Flask) -> None:
                         db.session.rollback()
                     customer_columns.append(field)
 
+            # 创建姓名+电话唯一约束，防止并发重复录入
+            try:
+                from sqlalchemy import inspect as sa_inspect
+                constraints = inspector.get_constraints("customers")
+                has_name_phone_constraint = any(
+                    c.get("name") == "uq_customer_name_phone" for c in constraints
+                )
+                if not has_name_phone_constraint:
+                    db.session.execute(text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_name_phone ON customers(name, phone)"
+                    ))
+                    db.session.commit()
+                    app.logger.info("[迁移] 已创建唯一约束 uq_customer_name_phone (name, phone)")
+            except Exception:
+                db.session.rollback()
+
         # --- 确保 ORM 中新增的表（如 monthly_customer_seq）已创建 ---
         try:
             from .models import MonthlyCustomerSeq  # noqa: F401 — 注册到 metadata
