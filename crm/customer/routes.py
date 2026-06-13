@@ -1662,7 +1662,7 @@ def public_pool_claim(customer_id: int):
     return redirect(url_for("customer.public_pool"))
 
 
-def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 5) -> int:
+def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 10) -> int:
     """超时单重派逻辑，可在 CLI / 定时任务中调用。
 
     处理流程：

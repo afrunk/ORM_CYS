@@ -88,7 +88,7 @@ def stats_index():
     if not start_dt and not end_dt and not preset:
         start_dt, end_dt = get_shift_window_utc(now_utc=now)
 
-    filters_created = []
+    filters_created = [Customer.created_at.isnot(None)]  # 排除 created_at 为 NULL 的异常数据
     filters_accepted = []
     filters_dispatched = []
 
@@ -120,7 +120,7 @@ def stats_index():
             ).label("invalid_count"),
         )
         .join(Customer, Customer.creator_id == User.id)
-        .filter(Customer.created_at.isnot(None), *filters_created)
+        .filter(*filters_created)
         .group_by(User.id, User.username)
         .all()
     )
@@ -319,7 +319,9 @@ def stats_index():
         )
     operator_total_dispatch = sum(row["dispatch_count"] for row in operator_rows)
 
-    total_created = sum(row["count"] for row in entry_rows)
+    # 使用独立的 COUNT 查询计算总录入数，确保与列表数据一致
+    total_created_query = db.session.query(func.count(Customer.id)).filter(*filters_created)
+    total_created = total_created_query.scalar() or 0
     total_accepted = sum(row["accepted"] for row in sales_rows)
     total_converted = sum(row["converted"] for row in sales_rows)
     pending = max(total_created - total_accepted, 0)
