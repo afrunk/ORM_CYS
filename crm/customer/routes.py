@@ -34,6 +34,11 @@ from ..permissions import login_required
 from ..utils.images import ensure_thumbnail, ensure_preview, remove_preview, remove_thumbnail
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
+# 简单的进程内缓存：用于减轻 region-stats 接口的数据库压力
+# key: (role_key, user_id, shift_window_key), value: (data, expire_at)
+_REGION_STATS_CACHE: dict[tuple, tuple] = {}
+_REGION_STATS_TTL = 30  # 秒
+
 customer_bp = Blueprint("customer", __name__, template_folder="../templates")
 
 
@@ -922,10 +927,23 @@ def region_stats():
     对于销售：返回个人接单数量（地区列表为空）
     对于运营：返回个人上传数量 + 在所有运营中的排名
     对于管理员/数据员：返回地区统计列表（不过渡到卡片，不展示卡片本身）
+
+    为了减轻高并发下数据库的压力，30 秒内的相同角色+用户+班次窗口请求会直接走缓存。
     """
+    import time as _time
+
     current = g.current_user
     start_dt, end_dt = get_shift_window_utc()
     role_key = (current.role or "").strip().lower()
+
+    # 缓存键：(角色, 用户ID, 班次窗口起点分钟级)
+    shift_key = int(start_dt.timestamp() // 60)
+    cache_key = (role_key, current.id, shift_key)
+    cached = _REGION_STATS_CACHE.get(cache_key)
+    if cached is not None:
+        data, expire_at = cached
+        if _time.time() < expire_at:
+            return jsonify(data)
 
     personal_count = 0
     personal_label = ""
@@ -1008,14 +1026,25 @@ def region_stats():
             for idx, row in enumerate(all_operator_counts, 1)
         ]
 
-    return jsonify({
+    payload = {
         "success": True,
         "region_stats": region_stats_list,
         "personal_count": int(personal_count or 0),
         "personal_label": personal_label,
         "personal_rank": personal_rank,
         "operator_ranking": operator_ranking,
-    })
+    }
+
+    # 写入缓存（30 秒）
+    _REGION_STATS_CACHE[cache_key] = (payload, _time.time() + _REGION_STATS_TTL)
+    # 简单的过期清理：避免字典无限增长
+    if len(_REGION_STATS_CACHE) > 200:
+        now_ts = _time.time()
+        for k, (_, exp) in list(_REGION_STATS_CACHE.items()):
+            if exp < now_ts:
+                _REGION_STATS_CACHE.pop(k, None)
+
+    return jsonify(payload)
 
 
 @customer_bp.route("/sales/availability", methods=["POST"])

@@ -29,7 +29,8 @@ STARTUP_URL = f"http://{CHECK_HOST}:{APP_PORT}/"
 
 STARTUP_TIMEOUT = 20
 HEALTH_INTERVAL = 5
-MAX_RETRIES = 3
+HEALTH_TIMEOUT = 10  # 单次健康检查超时（秒），放宽以应对慢请求
+MAX_RETRIES = 6      # 连续失败次数阈值（避免偶发慢请求触发重启）
 KILL_TIMEOUT = 10
 
 LOG_DIR = Path(__file__).parent
@@ -340,10 +341,10 @@ class FlaskWatcher:
     def check_health(self) -> bool:
         """发送健康检查请求，返回 True 表示正常。"""
         try:
-            resp = requests.get(HEALTH_URL, timeout=5)
+            resp = requests.get(HEALTH_URL, timeout=HEALTH_TIMEOUT)
             return resp.status_code == 200
         except requests.exceptions.Timeout:
-            log("[HEALTH] 健康检查超时 (5秒)", "WARNING")
+            log(f"[HEALTH] 健康检查超时 ({HEALTH_TIMEOUT}秒)", "WARNING")
             return False
         except ConnectionRefusedError:
             log("[HEALTH] 连接被拒绝", "WARNING")

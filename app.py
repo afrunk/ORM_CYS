@@ -34,6 +34,10 @@ def create_flask_app() -> "Flask":
 app = create_flask_app()
 
 if __name__ == "__main__":
-    # 对外开放 8000 端口
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    # 对外开放 8000 端口（启用多线程，避免慢请求阻塞健康检查）
+    from werkzeug.serving import make_server
+    import threading
+
+    server = make_server(host="0.0.0.0", port=8000, app=app, threaded=True)
+    server.serve_forever()
 
