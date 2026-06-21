@@ -339,17 +339,25 @@ class FlaskWatcher:
         return False
 
     def check_health(self) -> bool:
-        """发送健康检查请求，返回 True 表示正常。"""
+        """检查 Flask 进程是否存在。"""
+        if self.process is None or self.process.poll() is not None:
+            log("[HEALTH] Flask 进程不存在", "WARNING")
+            return False
         try:
-            resp = requests.get(HEALTH_URL, timeout=HEALTH_TIMEOUT)
-            return resp.status_code == 200
-        except requests.exceptions.Timeout:
-            log(f"[HEALTH] 健康检查超时 ({HEALTH_TIMEOUT}秒)", "WARNING")
+            result = subprocess.run(
+                ["pgrep", "-f", f"python.*app.py"],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            if result.returncode == 0:
+                return True
+            log("[HEALTH] Flask 进程未找到", "WARNING")
             return False
-        except ConnectionRefusedError:
-            log("[HEALTH] 连接被拒绝", "WARNING")
+        except subprocess.TimeoutExpired:
+            log("[HEALTH] 进程检查超时", "WARNING")
             return False
-        except requests.exceptions.RequestException:
+        except Exception:
             return False
 
     def run(self) -> None:
@@ -359,7 +367,7 @@ class FlaskWatcher:
         log(f"日志轮转: {LOG_MAX_BYTES // (1024*1024)}MB/文件，保留 {LOG_BACKUP_COUNT} 个备份")
         log(f"检查地址: {CHECK_HOST}:{APP_PORT}")
         log(f"外部地址: {BIND_HOST}:{APP_PORT}")
-        log(f"健康检查: {HEALTH_URL}")
+        log(f"健康检查: 进程检查 (pgrep)")
         log(f"失败阈值: 连续 {MAX_RETRIES} 次")
         log("=" * 60)
 
