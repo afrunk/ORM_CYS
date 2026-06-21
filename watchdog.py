@@ -320,7 +320,7 @@ class FlaskWatcher:
 
             try:
                 log(f"[READY] 尝试连接 ({attempt}): {STARTUP_URL}")
-                resp = requests.get(STARTUP_URL, timeout=5)
+                resp = requests.get(STARTUP_URL, timeout=HEALTH_TIMEOUT)
                 if resp.status_code < 500:
                     log(f"[READY] Flask 应用已就绪 (HTTP {resp.status_code})")
                     return True
