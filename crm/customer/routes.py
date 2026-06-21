@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import time
 from datetime import datetime, timedelta, timezone
 
 import os
@@ -12,6 +14,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
     current_app,
     jsonify,
@@ -1064,6 +1067,17 @@ def customer_create():
         remark = request.form.get("remark", "").strip()
         sales_id = request.form.get("sales_id", type=int)
         operator_id = request.form.get("operator_id", type=int)
+
+        # 防重复提交：生成表单哈希值，5秒内不允许重复提交
+        form_hash = hashlib.md5(
+            f"{current.id}:{name}:{phone}:{region}".encode()
+        ).hexdigest()[:16]
+        last_submit_key = f"last_customer_submit_{current.id}"
+        last_hash = session.get(last_submit_key)
+        if last_hash == form_hash:
+            flash("请勿快速重复提交！", "warning")
+            return redirect(url_for("customer.customer_create"))
+        session[last_submit_key] = form_hash
 
         # 运营只能录入，不能派单：禁止指定销售，名称可空，但必须有联系方式和地区
         if current.role == "operator":
