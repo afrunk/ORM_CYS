@@ -486,6 +486,12 @@ def create_app() -> Flask:
     if not app.config.get("TESTING"):
         _init_scheduler(app)
 
+    # 把 app 实例注册到 async_jobs，供后台线程 push app context 使用。
+    # 不注册的话，submit_async 提交的 run_auto_dispatch_unassigned 等任务
+    # 会在 Customer.query 处抛 RuntimeError: Working outside of application context.
+    from .utils.async_jobs import set_current_app
+    set_current_app(app)
+
     # 延迟导入，避免循环引用
     from .auth.routes import auth_bp
     from .admin.routes import admin_bp
@@ -812,15 +818,16 @@ def create_app() -> Flask:
 
 def _init_scheduler(app: Flask) -> None:
     """初始化 APScheduler 定时任务。
-    
+
     定时任务：
     - 每1分钟扫描一次超时单并自动重派
+    - 每1分钟巡检一次孤儿 unassigned 客户（自动派单静默丢失的兜底）
     """
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.interval import IntervalTrigger
-        from .customer.routes import reassign_timeouts
-        
+        from .customer.routes import reassign_timeouts, sweep_orphan_unassigned
+
         scheduler = BackgroundScheduler()
 
         def _run_reassign_job() -> None:
@@ -836,7 +843,20 @@ def _init_scheduler(app: Flask) -> None:
                         _current_app.logger.error(
                             f"定时任务 reassign_timeouts 执行失败：{e}", exc_info=True
                         )
-        
+
+        def _run_sweep_orphan_job() -> None:
+            """巡检孤儿 unassigned：auto-dispatch 静默丢失时，自动转公海兜底。"""
+            from flask import current_app as _current_app
+
+            with app.app_context():
+                try:
+                    sweep_orphan_unassigned(timeout_minutes=1)
+                except Exception as e:  # noqa: BLE001
+                    if _current_app:
+                        _current_app.logger.error(
+                            f"定时任务 sweep_orphan_unassigned 执行失败：{e}", exc_info=True
+                        )
+
         # 添加超时单重派任务：每1分钟执行一次
         scheduler.add_job(
             func=_run_reassign_job,
@@ -848,9 +868,23 @@ def _init_scheduler(app: Flask) -> None:
             coalesce=True,             # 错过的多次触发合并成一次
             misfire_grace_time=120,    # 最多容忍 2 分钟的延迟
         )
-        
+
+        # 添加孤儿 unassigned 巡检任务：每1分钟执行一次
+        # 阈值 1 分钟很短，目的是"快速暴露问题"：自动派单只要静默丢失 1 分钟，立刻丢公海
+        scheduler.add_job(
+            func=_run_sweep_orphan_job,
+            trigger=IntervalTrigger(minutes=1),
+            id="sweep_orphan_unassigned",
+            name="孤儿未分配客户巡检（1min 阈值）",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+        )
+
         scheduler.start()
         app.logger.info("定时任务已启动：超时单自动重派（每1分钟）")
+        app.logger.info("定时任务已启动：孤儿未分配客户巡检（每1分钟，阈值1分钟）")
     except ImportError:
         app.logger.warning("APScheduler 未安装，定时任务功能不可用")
     except Exception as e:
