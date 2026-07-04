@@ -29,14 +29,14 @@ STARTUP_URL = f"http://{CHECK_HOST}:{APP_PORT}/"
 ONLINE_USERS_URL = f"http://{CHECK_HOST}:{APP_PORT}/metrics/online-users"
 
 STARTUP_TIMEOUT = 20
-HEALTH_INTERVAL = 5
-HEALTH_TIMEOUT = 10  # 单次健康检查超时（秒），放宽以应对慢请求
-MAX_RETRIES = 6      # 连续失败次数阈值（避免偶发慢请求触发重启）
+HEALTH_INTERVAL = 120          # 借鉴 custom-ormfor5：放宽到 2 分钟，慢请求不再误杀
+HEALTH_TIMEOUT = 8             # 单次超时（HEALTH_INTERVAL 放宽后可稍短）
+MAX_RETRIES = 3                # 借鉴 custom-ormfor5：端口死了就直接重启，不要"先 N 次失败再重启"
 KILL_TIMEOUT = 10
 # 熔断：如果连续 CRASH_LIMIT 次重启后新进程在 READY_GRACE 秒内仍然立刻崩，
 # 判定为不可恢复故障，停止 watchdog 重启，避免 1 秒一次循环浪费资源。
 CRASH_LIMIT = 5
-READY_GRACE = 30
+READY_GRACE = 60
 # 卡顿检测：单次 /health 请求耗时超过 SLOW_THRESHOLD 秒算"慢"。
 # 连续 SLOW_CONSECUTIVE 次慢请求视为"卡顿"，只打 WARN 不重启
 # （重启解决不了慢的问题，反而会丢弃所有在线用户会话）。
@@ -215,6 +215,22 @@ class FlaskWatcher:
             os.kill(pid, sig)
             return True
         except OSError:
+            return False
+
+    def _is_port_open(self) -> bool:
+        """借鉴 custom-ormfor5：探测端口是否被监听。
+
+        与 HTTP /health 探测的区别：
+        - HTTP 探测会被 werkzeug 队列阻塞（慢请求时）
+        - TCP 端口探测是 OS 内核直接返回，毫秒级
+        如果进程死透了端口就立即没人 listen，返回 False。
+        """
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                return sock.connect_ex((CHECK_HOST, APP_PORT)) == 0
+        except Exception:
             return False
 
     def _redirect_flask_output(self) -> None:
@@ -536,6 +552,10 @@ class FlaskWatcher:
                         self.crash_count = 0
             else:
                 # 进程存活 → 真探测 /health 的响应时间
+                # 借鉴 custom-ormfor5 的设计哲学：
+                # 1) 端口活着 ≠ 一定健康，但端口死了 = 一定不健康
+                # 2) 慢请求/超时不算"故障"，只 WARN
+                # 3) 只有"HTTP 持续 500"或"连接被拒绝"才重启
                 ok, latency, code = self.probe_health()
                 if ok:
                     if self.fail_count > 0:
@@ -555,9 +575,30 @@ class FlaskWatcher:
                         if self.slow_count > 0:
                             log(f"[SLOW] 恢复正常 (之前连续慢 {self.slow_count} 次)")
                         self.slow_count = 0
+                elif code == 0:
+                    # code=0 = 连接被拒绝或超时（端口可能死了或 werkzeug 队列卡死）
+                    # 借鉴 custom-ormfor5：先确认端口是否真的没监听（=进程死了）
+                    # 如果端口还活着，只是慢/超时，就只 WARN 不重启
+                    if self._is_port_open():
+                        self.slow_count += 1
+                        log(
+                            f"[WATCH] /health 超时/失败但端口仍存活 "
+                            f"(latency={latency:.2f}s, slow_count={self.slow_count}) "
+                            f"——只 WARN 不重启",
+                            "WARNING",
+                        )
+                    else:
+                        # 端口死了 = 进程真的挂了 → 立即计入 fail_count
+                        self.fail_count += 1
+                        log(
+                            f"[WATCH] 端口 {APP_PORT} 已不监听 (fail_count={self.fail_count}/{MAX_RETRIES})",
+                            "ERROR",
+                        )
                 else:
+                    # code != 0 (例如 5xx)：HTTP 真出错了，但和 custom-ormfor5 一样
+                    # 连续多次 5xx 才重启
                     self.fail_count += 1
-                    log(f"[WATCH] Flask 健康检查失败 ({self.fail_count}/{MAX_RETRIES}, latency={latency:.2f}s code={code})", "WARNING")
+                    log(f"[WATCH] Flask 返回 HTTP {code} ({self.fail_count}/{MAX_RETRIES}, latency={latency:.2f}s)", "WARNING")
 
             # 在线用户统计：每 ONLINE_REPORT_INTERVAL 秒打一次
             now = time.time()
