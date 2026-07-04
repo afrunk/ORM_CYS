@@ -33,6 +33,7 @@ from ..notifications import send_assignment_notification
 from ..permissions import login_required
 from ..utils.images import (
     ensure_preview,
+    ensure_preview_async_or_fallback,
     ensure_thumbnail,
     ensure_thumbnail_async_or_fallback,
     remove_preview,
@@ -1507,14 +1508,18 @@ def customer_detail(customer_id: int):
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 
     # 大预览图：异步生成，避免每次打开详情页阻塞渲染线程。
-    # 同时调度一次"无效佐证图"的预览，保持原行为。
+    # 关键：cold cache 第一次访问时不能同步 ensure_preview（400ms+ 阻塞请求线程）
+    # 用 ensure_preview_async_or_fallback：已有则同步返回路径（零开销），
+    # 没有则派后台任务，本请求立刻返回原图 URL（浏览器立刻能看），
+    # 下次刷新或再次访问时 preview 已经在 → 自动走 webp。
     if customer.image_path:
-        schedule_async_preview(customer.image_path)
+        image_preview_path = ensure_preview_async_or_fallback(customer.image_path) or customer.image_path
+    else:
+        image_preview_path = None
     if customer.invalid_proof_image:
-        schedule_async_preview(customer.invalid_proof_image)
-
-    image_preview_path = customer.image_path  # 模板侧 fallback 到原图
-    invalid_preview_path = customer.invalid_proof_image
+        invalid_preview_path = ensure_preview_async_or_fallback(customer.invalid_proof_image) or customer.invalid_proof_image
+    else:
+        invalid_preview_path = None
 
     _role_key = "".join(
         unicodedata.normalize("NFKC", str(current.role or "")).split()
