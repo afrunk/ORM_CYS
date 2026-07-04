@@ -70,22 +70,27 @@
             <td>
               {% if c.image_path %}
               <div class="image-preview-container">
-                {% set thumb_path = thumbnail_map.get(c.id) %}
+                {# 方案 II（2026-07-04）：缩略图后台预生成后这里直接读 thumb_rel 路径。
+                   thumbnail_map 由路由侧用 _thumbnail_path_if_exists 路径推断生成，
+                   不触发任何 WEBP 转码。thumb 不存在 → fallback 到原图。 #}
                 {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
-                {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
-                {# preview_url 不在列表渲染时同步生成，改为 hover/click 时前端按需加载。 #}
-                {# 这里先把 data-preview-url 指向原图，浏览器拉到的就是原图；后台异步预热后
-                   用户再次点击时由 JS 替换为 preview URL。 #}
+                {% set thumb_rel = thumbnail_map.get(c.id) %}
+                {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
+                {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
+                {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else full_image_url %}
                 <picture>
-                  {% if thumb_path %}
+                  {% if thumb_rel %}
                   <source srcset="{{ thumb_url }}" type="image/webp">
+                  {% endif %}
+                  {% if preview_rel %}
+                  <source srcset="{{ preview_url }}" type="image/webp" media="(min-width: 768px)">
                   {% endif %}
                   <img src="{{ thumb_url }}"
                      alt="客户图片"
                        width="96"
                        height="96"
                      class="customer-thumbnail"
-                       data-preview-url="{{ full_image_url }}"
+                       data-preview-url="{{ preview_url }}"
                        data-full-url="{{ full_image_url }}"
                        loading="lazy"
                        decoding="async"
@@ -557,19 +562,24 @@
           <td>
             {% if c.image_path %}
             <div class="image-preview-container">
-              {% set thumb_path = thumbnail_map.get(c.id) %}
               {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
-              {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
+              {% set thumb_rel = thumbnail_map.get(c.id) %}
+              {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
+              {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
+              {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else full_image_url %}
               <picture>
-                {% if thumb_path %}
+                {% if thumb_rel %}
                 <source srcset="{{ thumb_url }}" type="image/webp">
+                {% endif %}
+                {% if preview_rel %}
+                <source srcset="{{ preview_url }}" type="image/webp" media="(min-width: 768px)">
                 {% endif %}
                 <img src="{{ thumb_url }}"
                    alt="客户图片"
                      width="96"
                      height="96"
                    class="customer-thumbnail"
-                     data-preview-url="{{ full_image_url }}"
+                     data-preview-url="{{ preview_url }}"
                      data-full-url="{{ full_image_url }}"
                      loading="lazy"
                      decoding="async"
@@ -968,7 +978,19 @@ function initImagePreview() {
   document.body.appendChild(overlay);
   const openOriginalLink = overlay.querySelector('.image-preview-open-original');
   
-  // 为所有缩略图添加点击事件
+  // 为「查看大图」按钮添加点击事件（2026-07-04：列表页不再用缩略图）
+  document.querySelectorAll('.view-image-btn').forEach(btn => {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();         // 不触发行点击
+      e.preventDefault();
+      const fullUrl = this.getAttribute('data-full-url');
+      if (fullUrl) {
+        showImagePreview(fullUrl, fullUrl);
+      }
+    });
+  });
+
+  // 兼容：如果页面里还有旧的 .customer-thumbnail（详情页内嵌的），也继续支持
   document.querySelectorAll('.customer-thumbnail').forEach(img => {
     img.addEventListener('click', function(e) {
       e.stopPropagation();

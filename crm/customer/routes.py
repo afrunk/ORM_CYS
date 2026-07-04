@@ -36,6 +36,8 @@ from ..utils.images import (
     ensure_preview_async_or_fallback,
     ensure_thumbnail,
     ensure_thumbnail_async_or_fallback,
+    _preview_path_if_exists,
+    _thumbnail_path_if_exists,
     remove_preview,
     remove_thumbnail,
     schedule_async_preview,
@@ -883,21 +885,22 @@ def customer_list():
     from ..models import SystemConfig
     system_dispatch_enabled = SystemConfig.get_bool("system_dispatch_enabled", default=False)
 
-    # 图片缩略图：列表渲染时只检查是否已存在，不做同步生成（CPU 密集）。
-    # 没生成完的图直接返回原图 URL 占位，同时后台异步补做。
-    thumbnail_map = {}
-    pending_preview_files: list[str] = []
+    # 性能优化 2026-07-04（方案 II 用户确认）：
+    # 缩略图后台预生成（上传时一次到位），列表页只查路径不派任何任务。
+    # thumbnail_map / preview_map 直接走 _thumbnail_path_if_exists / _preview_path_if_exists
+    # 这是纯文件存在性检查，每个 < 1ms，20 个客户也 < 10ms。
+    # 没有现成缩略图的图自动 fallback 到原图（浏览器原生解码，不卡 CPU）。
+    thumbnail_map: dict[int, str] = {}
+    preview_map: dict[int, str] = {}
     for customer in customers:
         if not customer.image_path:
             continue
-        thumb_rel = ensure_thumbnail_async_or_fallback(customer.image_path)
-        if thumb_rel:
-            thumbnail_map[customer.id] = thumb_rel
-        pending_preview_files.append(customer.image_path)
-
-    # 把 preview 全部丢到后台线程池（仅生成一次，再次访问直接命中缓存）
-    for fname in pending_preview_files:
-        schedule_async_preview(fname)
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            thumbnail_map[customer.id] = t_rel
+        p_rel = _preview_path_if_exists(customer.image_path)
+        if p_rel:
+            preview_map[customer.id] = p_rel
 
     # 如果是待分配销售 tab，需要加载销售列表供手动派单
     sales_users = None
@@ -947,6 +950,7 @@ def customer_list():
         pagination=pagination,
         per_page=per_page,
         thumbnail_map=thumbnail_map,
+        preview_map=preview_map,
         current_filters=request.args.to_dict(),
         system_dispatch_enabled=system_dispatch_enabled,
         active_tab=active_tab,
@@ -1247,8 +1251,10 @@ def customer_create():
                 file_path = os.path.join(upload_dir, filename)
                 file.save(file_path)
                 image_path = filename
-                # 缩略图同步生成（很小，不卡）；预览图丢后台线程池
-                ensure_thumbnail(image_path)
+                # 性能优化 2026-07-04（方案 II 用户确认）：上传后后台静默生成缩略图/大图。
+                # 列表/详情页只查路径、不派任务；首次访问时如果 thumb 还没好就 fallback 原图。
+                # schedule_async_* 内部有 in_flight 去重，即使被预热进程/其他请求同时派也没事。
+                schedule_async_thumbnail(image_path)
                 schedule_async_preview(image_path)
 
         # 默认先创建为“未分配”或“待派单”状态
@@ -1386,11 +1392,13 @@ def customer_edit(customer_id: int):
                 filename = secure_filename(file.filename)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{filename}"
-                
+
                 file_path = os.path.join(upload_dir, filename)
                 file.save(file_path)
                 customer.image_path = filename
-                ensure_thumbnail(filename)
+                # 性能优化 2026-07-04（方案 II）：编辑上传时后台静默生成缩略图/大图，
+                # 不阻塞当前 POST 请求。
+                schedule_async_thumbnail(filename)
                 schedule_async_preview(filename)
 
         # 注意：编辑时不修改销售分配和运营人员
@@ -1497,6 +1505,8 @@ def customer_detail(customer_id: int):
             filename = f"{timestamp}_invalid_{filename}"
             invalid_file.save(os.path.join(upload_dir, filename))
             customer.invalid_proof_image = filename
+            # 性能优化 2026-07-04：佐证截图上传后台静默处理
+            schedule_async_thumbnail(filename)
             schedule_async_preview(filename)
 
         new_remark = request.form.get("remark", "").strip()
@@ -1507,19 +1517,26 @@ def customer_detail(customer_id: int):
         flash("客户跟进信息已保存。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 
-    # 大预览图：异步生成，避免每次打开详情页阻塞渲染线程。
-    # 关键：cold cache 第一次访问时不能同步 ensure_preview（400ms+ 阻塞请求线程）
-    # 用 ensure_preview_async_or_fallback：已有则同步返回路径（零开销），
-    # 没有则派后台任务，本请求立刻返回原图 URL（浏览器立刻能看），
-    # 下次刷新或再次访问时 preview 已经在 → 自动走 webp。
+    # 性能优化 2026-07-04（方案 II 用户确认）：
+    # 缩略图完全后台预生成，详情页/列表页只查文件路径，不派任何任务。
+    # 模板里用 {thumb,preview}_map 做 fallback：
+    # - 已有 webp → 显示 webp（零解码，快，缓存命中）
+    # - 没有 webp → fallback 到原图（浏览器原生解码，单张大图也 < 100ms）
+    # 这样既保留了缩略图列表的视觉，又彻底消除冷启动 CPU 烧的情况。
+    image_thumb_map: dict[int, str] = {}
+    image_preview_map: dict[int, str] = {}
+    invalid_thumb_map: dict[int, str] = {}
     if customer.image_path:
-        image_preview_path = ensure_preview_async_or_fallback(customer.image_path) or customer.image_path
-    else:
-        image_preview_path = None
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            image_thumb_map[customer.id] = t_rel
+        p_rel = _preview_path_if_exists(customer.image_path)
+        if p_rel:
+            image_preview_map[customer.id] = p_rel
     if customer.invalid_proof_image:
-        invalid_preview_path = ensure_preview_async_or_fallback(customer.invalid_proof_image) or customer.invalid_proof_image
-    else:
-        invalid_preview_path = None
+        t_rel = _thumbnail_path_if_exists(customer.invalid_proof_image)
+        if t_rel:
+            invalid_thumb_map[customer.id] = t_rel
 
     _role_key = "".join(
         unicodedata.normalize("NFKC", str(current.role or "")).split()
@@ -1533,8 +1550,9 @@ def customer_detail(customer_id: int):
     return render_template(
         "customer/customer_detail.html",
         customer=customer,
-        image_preview_path=image_preview_path,
-        invalid_preview_path=invalid_preview_path,
+        image_thumb_map=image_thumb_map,
+        image_preview_map=image_preview_map,
+        invalid_thumb_map=invalid_thumb_map,
         show_sales_follow_up=show_sales_follow_up,
         is_super_admin_user=is_super_admin_user,
     )
@@ -1575,16 +1593,12 @@ def public_pool():
     customers = query.order_by(Customer.id.desc()).all()
 
     thumbnail_map = {}
-    pending_preview_files: list[str] = []
     for customer in customers:
         if not customer.image_path:
             continue
-        thumb_rel = ensure_thumbnail_async_or_fallback(customer.image_path)
-        if thumb_rel:
-            thumbnail_map[customer.id] = thumb_rel
-        pending_preview_files.append(customer.image_path)
-    for fname in pending_preview_files:
-        schedule_async_preview(fname)
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            thumbnail_map[customer.id] = t_rel
 
     sales_users = []
     show_contact = True
