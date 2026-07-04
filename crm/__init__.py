@@ -84,6 +84,19 @@ def _configure_logger(app: Flask) -> None:
     console.setLevel(logging.INFO)
     app.logger.addHandler(console)
 
+    # ============================================================
+    # 静默 werkzeug 访问日志（[GET /health 200 ...] 那一行）。
+    #
+    # 历史教训（2026-07-04）：
+    #   在 watchdog 下，app.py 的 stdout 是管道，werkzeug 每次请求
+    #   都通过 logging.info() 写访问日志。高并发下管道填满、watchdog
+    #   还没及时 drain 时，logger 会持锁 sleep → 所有请求线程卡死。
+    #   静默 werkzeug 可彻底规避这一类日志阻塞问题。
+    #
+    # 需要排查具体请求时，临时改成 logging.INFO 即可。
+    # ============================================================
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
     app.logger.info(f"[日志] 文件日志已配置：{log_path}")
 
 def _migrate_schema(app: Flask) -> None:

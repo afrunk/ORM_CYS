@@ -6,9 +6,17 @@
 - 本模块做了两点优化：
   1) 提供 schedule_async_preview() 接口把"生成大预览图"丢到后台线程，避免阻塞请求。
   2) 缩略图保留 method=6（很小，不卡）；大预览如果调用方同步调用，仍然是同一个慢路径。
+
+并发设计（重要）：
+- 用一个全局有界 ThreadPoolExecutor（max_workers=2）替代「每个请求每个文件开一个 daemon 线程 + BoundedSemaphore」。
+- 原因：werkzeug threaded 模式下，HTTP 请求线程本身已经多个；如果预览/缩略图任务每个文件都开 daemon 线程，
+  进程内线程数会爆炸（一次列表页 20 张图 = 20 个 daemon worker），所有线程抢 GIL，反而比同步执行还慢。
+- Executor 内部 worker 数量固定为 2（CPU 密集任务再多的 worker 也只是争 GIL），
+  任务通过有界队列排队。Submit 是非阻塞的，调用方请求线程立即返回。
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import threading
 from pathlib import Path
@@ -31,14 +39,26 @@ PREVIEW_SIZE: Tuple[int, int] = (1080, 1080)
 WEBP_QUALITY_THUMB = 74
 WEBP_QUALITY_PREVIEW = 82
 
-# 并发限制：同时跑的 preview worker 数。
-# WEBP 转码是 CPU 密集型，过多并发反而拖慢整体。
-_MAX_CONCURRENT_PREVIEW_WORKERS = 2
-_preview_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_PREVIEW_WORKERS)
+# ============================================================================
+# 全局有界线程池：替代旧版「每文件开 daemon 线程 + BoundedSemaphore」。
+# - max_workers=2 是经验值：WEBP 转码是 CPU 密集任务，再多的 worker 也只是争 GIL。
+# - 队列有上限（通过 ThreadPoolExecutor 默认实现，submit 不阻塞），调用方立即返回。
+# ============================================================================
+_PREVIEW_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="img-preview",
+)
+_THUMB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="img-thumb",
+)
 # 统计已派发的任务数（用于诊断）
 _preview_dispatch_count = 0
 _preview_done_count = 0
 _preview_lock = threading.Lock()
+_thumb_dispatch_count = 0
+_thumb_done_count = 0
+_thumb_lock = threading.Lock()
 
 
 def _static_root() -> str:
@@ -164,21 +184,14 @@ def ensure_preview(image_filename: str) -> Optional[str]:
 
 
 def _preview_worker(image_filename: str) -> None:
-    """后台线程函数：跑一次 WEBP 转码。
+    """Executor worker 函数：跑一次 WEBP 转码。
 
-    用 threading.Thread 而不是 ThreadPoolExecutor：
-    - 在 Werkzeug threaded server + APScheduler + Windows 的组合下，
-      ThreadPoolExecutor 的 worker 在某些条件下不会被调度
-      （已实测：submit 后 worker 永不调用 ensure_preview）。
-    - 直接开 daemon 线程稳定可靠；信号量限制同时运行的并发数。
+    由 _PREVIEW_EXECUTOR 调度，executor 内部已经限制了并发（max_workers=2），
+    不再需要额外的信号量。
 
-    注意：daemon 线程里没有 Flask app context，所有 current_app.* 调用必须 try/except。
+    注意：worker 线程里没有 Flask app context，所有 current_app.* 调用必须 try/except。
     """
     global _preview_done_count
-    try:
-        _preview_semaphore.acquire()
-    except Exception:
-        return
     try:
         result = ensure_preview(image_filename)
         try:
@@ -193,7 +206,7 @@ def _preview_worker(image_filename: str) -> None:
                 "Async preview worker failed for %s: %s", image_filename, exc
             )
         except RuntimeError:
-            # daemon 线程里没有 app context；用 stderr 兜底
+            # executor 线程里没有 app context；用 stderr 兜底
             import sys
             print(
                 f"[async-preview] worker failed: {image_filename}: {exc}",
@@ -202,16 +215,15 @@ def _preview_worker(image_filename: str) -> None:
         except Exception:
             pass
     finally:
-        try:
-            _preview_semaphore.release()
-        except Exception:
-            pass
         with _preview_lock:
             _preview_done_count += 1
 
 
 def schedule_async_preview(image_filename: Optional[str]) -> None:
     """后台异步生成 preview，不阻塞调用方。
+
+    用全局有界 ThreadPoolExecutor（max_workers=2）替代旧的「每文件开 daemon 线程 + 信号量」。
+    Submit 是非阻塞的，HTTP 请求线程立即返回，不会因为本任务被 GIL 抢占而卡死其他请求。
 
     用于：
     - 列表页 hover/click 触发
@@ -228,13 +240,7 @@ def schedule_async_preview(image_filename: Optional[str]) -> None:
             _preview_dispatch_count += 1
             dispatched = _preview_dispatch_count
             done = _preview_done_count
-        t = threading.Thread(
-            target=_preview_worker,
-            args=(image_filename,),
-            name=f"img-preview-{image_filename[:20]}",
-            daemon=True,
-        )
-        t.start()
+        _PREVIEW_EXECUTOR.submit(_preview_worker, image_filename)
         try:
             current_app.logger.debug(
                 "[async-preview] scheduled: %s (dispatched=%d done=%d)",
@@ -290,13 +296,7 @@ def schedule_async_thumbnail(image_filename: Optional[str]) -> None:
             return
         with _thumb_lock:
             _thumb_dispatch_count += 1
-        t = threading.Thread(
-            target=_thumb_worker,
-            args=(image_filename,),
-            name=f"img-thumb-{image_filename[:20]}",
-            daemon=True,
-        )
-        t.start()
+        _THUMB_EXECUTOR.submit(_thumb_worker, image_filename)
     except Exception:
         pass
 

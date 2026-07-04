@@ -301,26 +301,43 @@ class FlaskWatcher:
         if self._watchdog_token:
             env["CRM_WATCHDOG_TOKEN"] = self._watchdog_token
 
+        # ============================================================
+        # 历史教训（2026-07-04）：
+        # 之前用 stdout=subprocess.PIPE 把 Flask stdout 接进管道，
+        # 然后 watchdog 每 HEALTH_INTERVAL=120s 才 drain 一次。
+        # 高并发时管道（默认 64KB）一旦塞满，Flask 内部 logger 的
+        # StreamHandler.emit() 就会在 pipe_write 上 sleep —— 而它
+        # 同时持有 Handler.lock。结果是所有 werkzeug 请求线程都卡在
+        # logging.Handler.acquire()，连 /health 都返回不了。
+        #
+        # 修复：stdout 直接重定向到 logs/app.out（真实文件，page cache
+        # 可以缓冲，永远不会因为消费者跟不上而阻塞 Flask）。
+        # ============================================================
+        flask_stdout_path = LOG_DIR / "logs" / "app.out"
+        flask_stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        flask_stdout_file = open(flask_stdout_path, "ab", buffering=0)  # 行缓冲不阻塞
         try:
             self.process = subprocess.Popen(
                 [python_bin, "app.py"],
                 cwd=Path(__file__).parent,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=flask_stdout_file,    # ← 真实文件，不再用 PIPE
+                stderr=flask_stdout_file,    # ← 也直接进同一文件，方便排查
                 start_new_session=True,
                 env=env,
-                text=True,
-                bufsize=1,
+                # 不再需要 text=True / bufsize=1：二进制流到文件
             )
-            self.pid = self.process.pid
-            self.killed_by_us = False  # 新一轮生命周期，重置主动终止标志
-            self.output_reader = FlaskOutputReader(self.process)
-            log(f"[START] Flask 进程已启动 (PID: {self.pid})")
-            self.last_start_time = time.time()
-            return True
-        except Exception as e:
-            log(f"[START] 启动 Flask 失败: {e}", "ERROR")
-            return False
+            self._flask_stdout_file = flask_stdout_file
+        except Exception:
+            flask_stdout_file.close()
+            raise
+        self.pid = self.process.pid
+        self.killed_by_us = False  # 新一轮生命周期，重置主动终止标志
+        # 旧版 FlaskOutputReader 设计给 PIPE 用；现在写文件，不需要它
+        self.output_reader = None
+        log(f"[START] Flask 进程已启动 (PID: {self.pid})")
+        log(f"[START] Flask stdout → {flask_stdout_path}（直写文件，不再走管道）")
+        self.last_start_time = time.time()
+        return True
 
     def kill_flask(self) -> None:
         """强制终止 Flask 进程及其所有子进程。"""

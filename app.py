@@ -40,9 +40,13 @@ def create_flask_app() -> "Flask":
 if __name__ == "__main__":
     # 直接 python app.py 启动时，正常构造并运行
     app = create_flask_app()
-    # 对外开放 8000 端口（启用多线程，避免慢请求阻塞健康检查）
+    # 对外开放 8000 端口。
+    # 注意：threaded=True（多线程模式）。
+    # 历史教训：之前用单线程 (threaded=False) 时，慢业务请求（如 /customers/ 列表页）
+    # 会独占唯一的请求线程，导致所有其他用户的请求（甚至 /health）排队到 8s 超时。
+    # 多线程下，需要保证 CPU 密集型后台任务（图片预览/缩略图生成）不抢占 GIL；
+    # 这由 crm/utils/images.py 的 ThreadPoolExecutor (max_workers=2) 控制。
     from werkzeug.serving import make_server
-    import threading
 
     server = make_server(host="0.0.0.0", port=8000, app=app, threaded=True)
     server.serve_forever()
