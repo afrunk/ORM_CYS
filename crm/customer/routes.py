@@ -1969,6 +1969,83 @@ def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 10) -> int:
         db.session.remove()
 
 
+def sweep_orphan_unassigned(timeout_minutes: int = 1) -> int:
+    """巡检"孤儿"未分配客户，把卡在 unassigned 太久的转入公海。
+
+    触发场景（已知）：
+    - 上传事务成功提交后，submit_async(run_auto_dispatch_unassigned) 静默丢失
+      （线程池挂掉 / Flask 进程刚重启还没就绪）
+    - 系统派单函数内部抛异常被吞掉
+    - 数据库短时不可用导致事务回滚，但上层 commit 已成功
+
+    设计要点：
+    - 与 reassign_timeouts 并行：reassign 只处理 pending，这里只处理 unassigned
+    - 阈值很短（默认 1 分钟），目的是"快速暴露"问题而不是真的等用户超时
+    - 如果 system_dispatch_enabled=0，说明系统本来就关着派单，
+      这些 unassigned 是预期内的，不应该被巡检强行丢进公海
+    - 只读取一次 status='unassigned' 的记录，避免重复扫描全表
+    """
+    from ..models import SystemConfig
+    from sqlalchemy.exc import SQLAlchemyError
+
+    if not SystemConfig.get_bool("system_dispatch_enabled", default=False):
+        # 系统派单关闭时，"未分配"是正常状态，跳过巡检
+        return 0
+
+    now = datetime.utcnow()
+    threshold = now - timedelta(minutes=timeout_minutes)
+
+    moved = 0
+    try:
+        # 只捞 created_at 超过阈值的 unassigned（其他还没到点的不动）
+        orphans = (
+            Customer.query.filter(
+                Customer.status == "unassigned",
+                Customer.created_at <= threshold,
+            )
+            .order_by(Customer.id.asc())
+            .all()
+        )
+
+        if not orphans:
+            return 0
+
+        for c in orphans:
+            c.status = "public_pool"
+            c.dispatch_time = now  # 公海里有这个时间，便于排序
+            wait_seconds = int((now - c.created_at).total_seconds())
+            _prepend_remark(
+                c,
+                f"[系统] 巡检：自动派单未生效，已等待 {wait_seconds}s，转入公海等待人工处理。",
+            )
+            moved += 1
+
+        db.session.commit()
+        try:
+            current_app.logger.warning(
+                f"[sweep_orphan_unassigned] 本次将 {moved} 个孤儿客户转入公海 "
+                f"(阈值 {timeout_minutes}min, system_dispatch_enabled=1)"
+            )
+        except RuntimeError:
+            pass
+        return moved
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        try:
+            current_app.logger.error(
+                f"[sweep_orphan_unassigned] 数据库异常，已回滚：{e}", exc_info=True
+            )
+        except RuntimeError:
+            pass
+        return 0
+    except Exception:
+        db.session.rollback()
+        raise
+    finally:
+        db.session.remove()
+
+
 @customer_bp.route("/<int:customer_id>/delete", methods=["POST"])
 @login_required
 def customer_delete(customer_id: int):
