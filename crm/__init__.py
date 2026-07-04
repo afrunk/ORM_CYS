@@ -172,6 +172,66 @@ def _migrate_schema(app: Flask) -> None:
             except Exception:
                 pass
 
+        # ============================================================
+        # customers 性能索引（2026-07-04）
+        #
+        # 历史教训：customers 表此前无任何业务索引。11224 条数据 + ORDER BY dispatch_time DESC
+        # + OFFSET N 翻页，每次翻页都要全表扫到 OFFSET。瓶颈观察：
+        #   - 列表页 SQL: 5~7ms / page（看着不大，但并发翻页会叠加）
+        #   - 主因是 OFFSET 不能走索引，page=10 实际比 page=2 慢（线性）
+        #   - 加索引后预期降到 <1ms / page
+        #
+        # 索引策略（按 _apply_customer_filters / customer_list 真实用到的列设计）：
+        # - idx_dispatch_id：服务 ORDER BY dispatch_time DESC NULLS LAST, id DESC
+        #   复合索引既覆盖排序又能被 OFFSET 走
+        # - idx_status：服务 status=unassigned/timeout 等过滤
+        # - idx_region：服务 region=... 过滤
+        # - idx_sales_id：服务销售角色只看自己 (sales_id = self)
+        # - idx_creator_id：服务运营角色只看自己 (creator_id = self)
+        # - idx_dispatch_time：服务时间范围过滤 (start/end)，且 NULLS LAST 排序走它也快
+        #
+        # 用 IF NOT EXISTS 等价的方式：先查 sqlite_master，存在则跳过。
+        # SQLite 不支持 CREATE INDEX IF NOT EXISTS 在所有版本上都干净，幂等用查表方式实现。
+        # ============================================================
+        if "customers" in table_names:
+            try:
+                existing = {
+                    row[0]
+                    for row in db.session.execute(
+                        text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='customers'")
+                    )
+                }
+                desired_indexes = [
+                    ("idx_customers_dispatch_id",  "dispatch_time DESC, id DESC"),
+                    ("idx_customers_dispatch_time", "dispatch_time"),
+                    ("idx_customers_status",        "status"),
+                    ("idx_customers_region",        "region"),
+                    ("idx_customers_sales_id",      "sales_id"),
+                    ("idx_customers_creator_id",    "creator_id"),
+                ]
+                created_count = 0
+                for idx_name, cols in desired_indexes:
+                    if idx_name in existing:
+                        continue
+                    # SQLite DESC keyword 在索引里允许。NULLS LAST 不在 SQL 索引里支持，
+                    # 但 planner 走这个索引 + ORDER BY 会得到正确 DESC 顺序，
+                    # NULL 顺序由 storage engine 后处理（SQLite 文档明确）。
+                    db.session.execute(
+                        text(f"CREATE INDEX {idx_name} ON customers({cols})")
+                    )
+                    created_count += 1
+                db.session.commit()
+                if created_count:
+                    app.logger.info(
+                        f"[迁移] customers 新增 {created_count} 个索引："
+                        + ", ".join(n for n, _ in desired_indexes if n not in existing)
+                    )
+                else:
+                    app.logger.info("[迁移] customers 索引已存在，跳过")
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.error(f"[迁移] customers 索引创建失败：{exc}")
+
         app.logger.info("[迁移] 数据库结构检查完成")
 
 
@@ -242,6 +302,45 @@ def create_app() -> Flask:
         Compress(app)
     except ImportError:
         app.logger.warning("flask-compress 未安装，HTTP 响应不会走 gzip")
+
+    # ============================================================
+    # 静态资源缓存头（性能优化 2026-07-04）
+    #
+    # 痛点：列表页会加载 6 个静态资源，其中 vendor 文件（bootstrap.min.css、
+    # bootstrap-icons.css、bootstrap.bundle.min.js）合计 ~410KB，每次翻页、
+    # 每次刷新浏览器都要重新下载一次，造成「点击下一页一直转圈」的用户体验。
+    #
+    # 优化策略（按文件名后缀分流）：
+    # - vendor/*（*.min.css / *.min.js / *.woff2 等）→ max-age=1年, immutable
+    #   因为已经是 .min 版本且文件名带版本号后，重命名 = 改版本，不会被覆盖
+    # - 业务 CSS/JS（main.css, main.js, thumb_fallback.js）→ max-age=5分钟
+    #   偶尔会改，但允许用户拿到旧版本 5 分钟
+    # - 图片（thumb/preview/*.webp、uploads/*）→ max-age=1天
+    #
+    # 注意：必须分开设置，不能统一 1 年，否则改 main.css 用户拿不到新版。
+    # ============================================================
+    import re as _re
+    from flask import request as _flask_request
+
+    @app.after_request
+    def _set_static_cache_headers(response):
+        path = _flask_request.path
+        # 只处理 /static/ 路径，业务路径不干扰
+        if not path.startswith("/static/"):
+            return response
+        # vendor 资源永久缓存
+        if "/static/vendor/" in path:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        # 业务 CSS/JS 短缓存
+        elif path.endswith(("/main.css", "/main.js", "/thumb_fallback.js")):
+            response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        # 图片缩略图 / 预览 / 用户上传
+        elif _re.search(r"\.(webp|png|jpe?g|gif|svg|woff2?|ttf|eot|ico)(\?.*)?$", path, _re.I):
+            response.headers["Cache-Control"] = "public, max-age=86400"
+        # 其它静态（极少见兜底）给短缓存
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300"
+        return response
 
     # 在线访客跟踪：每个请求的 remote_addr 加到 TTL 集合里，5 分钟内还活跃就算"在线"
     # 用于 watchdog 每分钟统计在线 IP 数和具体 IP 列表
