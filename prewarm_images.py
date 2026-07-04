@@ -97,9 +97,12 @@ def main():
     log(f'预热启动 PID={os.getpid()}')
     log('=' * 60)
 
+    # 2026-07-04 修复：扩展原图识别扩展名（之前过滤掉了 .webp / .gif 等，
+    # 导致这 8 张 .webp 原图永远不会生成缩略图，列表页就 fallback 到原图 5MB URL）。
     files = sorted(
         f for f in os.listdir(UPLOADS)
-        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'))
+        and not f.startswith('.')
     )
     log(f'找到原图 {len(files)} 张')
 

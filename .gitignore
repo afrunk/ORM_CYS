@@ -37,6 +37,13 @@ desktop.ini
 
 # 日志
 *.log
+logs/
+
+# 本地运维/调试产物（不应提交到仓库）
+backups/
+diagnostics/
+prewarm_*.out
+watchdog.out
 
 # 测试
 .pytest_cache/
