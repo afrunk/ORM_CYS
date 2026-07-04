@@ -69,19 +69,15 @@
             <td>{{ (pagination.page - 1) * per_page + loop.index }}</td>
             <td>
               {% if c.image_path %}
+              {% set thumb_rel = thumbnail_map.get(c.id) %}
+              {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
               <div class="image-preview-container">
-                {# 方案 II（2026-07-04）：缩略图后台预生成后这里直接读 thumb_rel 路径。
-                   thumbnail_map 由路由侧用 _thumbnail_path_if_exists 路径推断生成，
-                   不触发任何 WEBP 转码。thumb 不存在 → fallback 到原图。 #}
-                {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
-                {% set thumb_rel = thumbnail_map.get(c.id) %}
-                {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
-                {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
-                {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else full_image_url %}
+                {# 2026-07-04 用户反馈修复：没有 thumb 时**永远不拉原图**（原图 5MB+），
+                   直接显示占位 SVG。如果原图本身丢失/损坏，也显示占位（不会破图） #}
+                {% if thumb_rel %}
+                {% set thumb_url = url_for('static', filename=thumb_rel) %}
+                {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else thumb_url %}
                 <picture>
-                  {% if thumb_rel %}
-                  <source srcset="{{ thumb_url }}" type="image/webp">
-                  {% endif %}
                   {% if preview_rel %}
                   <source srcset="{{ preview_url }}" type="image/webp" media="(min-width: 768px)">
                   {% endif %}
@@ -91,11 +87,21 @@
                        height="96"
                      class="customer-thumbnail"
                        data-preview-url="{{ preview_url }}"
-                       data-full-url="{{ full_image_url }}"
                        loading="lazy"
                        decoding="async"
                        fetchpriority="low">
                 </picture>
+                {% else %}
+                {# 没有 thumb：inline 一个 SVG 占位（~500B，不发任何 HTTP 请求） #}
+                <svg width="96" height="96" viewBox="0 0 96 96"
+                     style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;">
+                  <rect width="96" height="96" fill="#f3f4f6"/>
+                  <path d="M30 60l12-16 12 12 8-8 14 16v8H30z" fill="#d1d5db"/>
+                  <circle cx="42" cy="38" r="6" fill="#d1d5db"/>
+                  <text x="48" y="86" font-size="8" text-anchor="middle"
+                        fill="#9ca3af" font-family="sans-serif">缩略图待生成</text>
+                </svg>
+                {% endif %}
               </div>
               {% else %}
               <span style="color: #9ca3af;">-</span>
@@ -561,16 +567,13 @@
           <td>{{ c.id }}</td>
           <td>
             {% if c.image_path %}
+            {% set thumb_rel = thumbnail_map.get(c.id) %}
+            {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
             <div class="image-preview-container">
-              {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
-              {% set thumb_rel = thumbnail_map.get(c.id) %}
-              {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
-              {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
-              {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else full_image_url %}
+              {% if thumb_rel %}
+              {% set thumb_url = url_for('static', filename=thumb_rel) %}
+              {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else thumb_url %}
               <picture>
-                {% if thumb_rel %}
-                <source srcset="{{ thumb_url }}" type="image/webp">
-                {% endif %}
                 {% if preview_rel %}
                 <source srcset="{{ preview_url }}" type="image/webp" media="(min-width: 768px)">
                 {% endif %}
@@ -580,11 +583,20 @@
                      height="96"
                    class="customer-thumbnail"
                      data-preview-url="{{ preview_url }}"
-                     data-full-url="{{ full_image_url }}"
                      loading="lazy"
                      decoding="async"
                      fetchpriority="low">
               </picture>
+              {% else %}
+              <svg width="96" height="96" viewBox="0 0 96 96"
+                   style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;">
+                <rect width="96" height="96" fill="#f3f4f6"/>
+                <path d="M30 60l12-16 12 12 8-8 14 16v8H30z" fill="#d1d5db"/>
+                <circle cx="42" cy="38" r="6" fill="#d1d5db"/>
+                <text x="48" y="86" font-size="8" text-anchor="middle"
+                      fill="#9ca3af" font-family="sans-serif">缩略图待生成</text>
+              </svg>
+              {% endif %}
             </div>
             {% else %}
             <span style="color: #9ca3af;">-</span>
@@ -967,47 +979,33 @@ async function refreshRegionStats() {
 
 // 图片预览功能
 function initImagePreview() {
-  // 创建预览覆盖层
+  // 创建预览覆盖层（不显示"查看原图"链接 —— 列表页 1080p preview 已足够清晰，
+  // 不再让用户从 UI 入口去拉 5MB 原始图）
   const overlay = document.createElement('div');
   overlay.className = 'image-preview-overlay';
   overlay.innerHTML = `
     <div class="image-preview-close" onclick="closeImagePreview()">×</div>
-      <a class="image-preview-open-original" href="#" target="_blank" rel="noopener">查看原图</a>
     <img src="" alt="预览图片">
   `;
   document.body.appendChild(overlay);
-  const openOriginalLink = overlay.querySelector('.image-preview-open-original');
-  
-  // 为「查看大图」按钮添加点击事件（2026-07-04：列表页不再用缩略图）
-  document.querySelectorAll('.view-image-btn').forEach(btn => {
-    btn.addEventListener('click', function(e) {
-      e.stopPropagation();         // 不触发行点击
-      e.preventDefault();
-      const fullUrl = this.getAttribute('data-full-url');
-      if (fullUrl) {
-        showImagePreview(fullUrl, fullUrl);
-      }
-    });
-  });
 
-  // 兼容：如果页面里还有旧的 .customer-thumbnail（详情页内嵌的），也继续支持
+  // 兼容：如果页面里还有 .customer-thumbnail（详情页内嵌的），点击打开 preview
   document.querySelectorAll('.customer-thumbnail').forEach(img => {
     img.addEventListener('click', function(e) {
       e.stopPropagation();
       const previewUrl = this.getAttribute('data-preview-url');
-      const fullUrl = this.getAttribute('data-full-url');
-      if (previewUrl || fullUrl) {
-        showImagePreview(previewUrl, fullUrl);
+      if (previewUrl) {
+        showImagePreview(previewUrl, null);
       }
     });
-    
+
     // 鼠标悬停时显示放大效果
     img.addEventListener('mouseenter', function() {
       this.style.transform = 'scale(1.2)';
       this.style.zIndex = '1000';
       this.style.position = 'relative';
     });
-    
+
     img.addEventListener('mouseleave', function() {
       this.style.transform = 'scale(1)';
       this.style.zIndex = 'auto';
@@ -1033,34 +1031,17 @@ function initImagePreview() {
 }
 
 function showImagePreview(previewUrl, fullUrl) {
+  // 2026-07-04 优化：弹窗只显示 preview (1080p webp, 几十~几百 KB)。
+  // - 不再让用户从 UI 入口去拉 5MB 原始图（删除"查看原图"按钮）
+  // - 不再悄悄预加载并替换成原图（删除 highResImg 自动换图逻辑）
+  // - fullUrl 参数保留以兼容旧调用方，但不再使用
+  void fullUrl;
   const overlay = document.querySelector('.image-preview-overlay');
   const img = overlay.querySelector('img');
-  const openOriginalLink = overlay.querySelector('.image-preview-open-original');
 
-  img.src = previewUrl || fullUrl || '';
-  if (openOriginalLink) {
-    if (fullUrl) {
-      openOriginalLink.href = fullUrl;
-      openOriginalLink.style.display = 'flex';
-      openOriginalLink.textContent = '查看原图';
-    } else {
-      openOriginalLink.removeAttribute('href');
-      openOriginalLink.style.display = 'none';
-    }
-  }
-
+  img.src = previewUrl || '';
   overlay.classList.add('active');
   document.body.style.overflow = 'hidden';
-
-  if (fullUrl && previewUrl !== fullUrl) {
-    const highResImg = new Image();
-    highResImg.onload = () => {
-      if (overlay.classList.contains('active')) {
-        img.src = fullUrl;
-      }
-    };
-    highResImg.src = fullUrl;
-  }
 }
 
 function closeImagePreview() {

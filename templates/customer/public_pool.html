@@ -35,15 +35,15 @@
             {% if c.image_path %}
             {% set thumb_path = thumbnail_map.get(c.id) %}
             {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
-            {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
-            <picture>
-              {% if thumb_path %}
-              <source srcset="{{ thumb_url }}" type="image/webp">
-              {% endif %}
+            {% if thumb_path %}
+            {% set thumb_url = url_for('static', filename=thumb_path) %}
+            {# 2026-07-04：点击放大也用 preview (1080p webp)，不再用 5MB 原图 #}
+            {% set preview_rel = preview_map.get(c.id) if preview_map else None %}
+            {% set click_url = url_for('static', filename=preview_rel) if preview_rel else thumb_url %}
             <img
               class="customer-thumbnail"
                 src="{{ thumb_url }}"
-                data-image-url="{{ full_image_url }}"
+                data-image-url="{{ click_url }}"
               alt="客户图片"
                 width="40"
                 height="40"
@@ -51,7 +51,14 @@
                 loading="lazy"
                 decoding="async"
               >
-            </picture>
+            {% else %}
+            <svg width="40" height="40" viewBox="0 0 40 40"
+                 style="background:#f3f4f6;border-radius:4px;">
+              <rect width="40" height="40" fill="#f3f4f6"/>
+              <path d="M12 25l5-7 5 5 4-3 5 6v3H12z" fill="#d1d5db"/>
+              <circle cx="18" cy="14" r="2.5" fill="#d1d5db"/>
+            </svg>
+            {% endif %}
             {% else %}
             <span style="color: #9ca3af;">-</span>
             {% endif %}

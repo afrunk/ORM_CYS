@@ -109,19 +109,15 @@
         <div class="form-group">
           <label>客户图片</label>
           <div class="image-preview-container">
-            {# 方案 II（2026-07-04 用户选）：缩略图后台预生成，前台直接读文件路径。
-               ensure_preview() 在这里只是查路径（已存在）或派后台任务（非阻塞），
-               永远不会同步执行 WEBP 转码。
-               模板层 src 改成 thumb_or_fallback 模式：thumb 不存在就 fallback 到原图。 #}
-            {% set full_image_url = url_for('static', filename='uploads/' + customer.image_path) %}
+            {# 2026-07-04 用户反馈：缩略图后台预生成，详情页优先用 thumb；
+               thumb + preview 都没有时，不要强行拉 5MB 原图，
+               显示占位并标"图片待处理"。 #}
             {% set thumb_rel = image_thumb_map.get(customer.id) if image_thumb_map else None %}
-            {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
             {% set preview_rel = image_preview_map.get(customer.id) if image_preview_map else None %}
-            {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else full_image_url %}
+            {% if thumb_rel or preview_rel %}
+            {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else url_for('static', filename=preview_rel) %}
+            {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else thumb_url %}
             <picture>
-              {% if thumb_rel %}
-              <source srcset="{{ thumb_url }}" type="image/webp">
-              {% endif %}
               {% if preview_rel %}
               <source srcset="{{ preview_url }}" type="image/webp">
               {% endif %}
@@ -135,10 +131,23 @@
                 decoding="async"
               >
             </picture>
+            {% else %}
+            {# 没有 thumb + preview：显示占位，不去拉原图 #}
+            <div style="display:flex;align-items:center;justify-content:center;
+                        width:320px;height:240px;background:#f3f4f6;
+                        border:1px solid #e5e7eb;border-radius:8px;color:#6b7280;">
+              <div style="text-align:center;">
+                <i class="bi bi-image" style="font-size:48px;color:#9ca3af;display:block;"></i>
+                <div style="margin-top:8px;font-size:14px;">图片待处理</div>
+                {% if customer.image_path %}
+                <small style="display:block;margin-top:4px;color:#9ca3af;">{{ customer.image_path }}</small>
+                {% endif %}
+              </div>
+            </div>
+            {% endif %}
           </div>
-          <small style="display: inline-block; margin-top: 0.25rem;">
-            <a href="{{ full_image_url }}" target="_blank" rel="noopener">查看原图</a>
-          </small>
+          {# 2026-07-04：去掉"查看原图"链接 —— 详情页 1080p preview 已足够清晰，
+             不再提供去拉 5MB 原始图的入口 #}
         </div>
       </div>
       {% endif %}
@@ -147,27 +156,32 @@
         <div class="form-group">
           <label>无效佐证截图</label>
           <div class="image-preview-container">
-            {% set full_image_url = url_for('static', filename='uploads/' + customer.invalid_proof_image) %}
             {% set thumb_rel = invalid_thumb_map.get(customer.id) if invalid_thumb_map else None %}
-            {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else full_image_url %}
-            <picture>
-              {% if thumb_rel %}
-              <source srcset="{{ thumb_url }}" type="image/webp">
-              {% endif %}
-              <img
-                src="{{ thumb_url }}"
-                alt="无效佐证截图"
-                class="previewable-image"
-                data-image-url="{{ full_image_url }}"
-                style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
-                loading="lazy"
-                decoding="async"
-              >
-            </picture>
+            {% if thumb_rel %}
+            {% set thumb_url = url_for('static', filename=thumb_rel) %}
+            <img
+              src="{{ thumb_url }}"
+              alt="无效佐证截图"
+              class="previewable-image"
+              {# 2026-07-04：详情页加载时只显示缩略图；点击放大也只显示缩略图，
+                 不再提供去拉 5MB 原始图的入口 #}
+              data-image-url="{{ thumb_url }}"
+              style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
+              loading="lazy"
+              decoding="async"
+            >
+            {% else %}
+            <div style="display:flex;align-items:center;justify-content:center;
+                        width:320px;height:200px;background:#f3f4f6;
+                        border:1px solid #e5e7eb;border-radius:8px;color:#6b7280;">
+              <div style="text-align:center;">
+                <i class="bi bi-image" style="font-size:32px;color:#9ca3af;display:block;"></i>
+                <div style="margin-top:6px;font-size:13px;">佐证图缩略图待生成</div>
+              </div>
+            </div>
+            {% endif %}
           </div>
-          <small style="display: inline-block; margin-top: 0.25rem;">
-            <a href="{{ full_image_url }}" target="_blank" rel="noopener">查看原图</a>
-          </small>
+          {# 2026-07-04：去掉"查看原图"链接 #}
         </div>
       </div>
       {% endif %}
@@ -226,11 +240,8 @@
           <div class="form-group">
             <label>无效佐证截图</label>
             <input type="file" name="invalid_proof_image" class="form-control" accept="image/*">
-            {% if customer.invalid_proof_image %}
-            <small style="color: #6b7280; margin-top: 0.5rem; display: block;">
-              当前：<a href="{{ url_for('static', filename='uploads/' + customer.invalid_proof_image) }}" target="_blank">查看图片</a>
-            </small>
-            {% endif %}
+            {# 2026-07-04：去掉"查看图片"链接 —— 不让用户从 UI 入口去拉 5MB 原始图。
+               已上传的图在上面会显示缩略图，需要更高清可以 hover/点击图片本身放大 #}
           </div>
         </div>
         {% endif %}

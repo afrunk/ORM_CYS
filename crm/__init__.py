@@ -313,7 +313,7 @@ def create_app() -> Flask:
     # 优化策略（按文件名后缀分流）：
     # - vendor/*（*.min.css / *.min.js / *.woff2 等）→ max-age=1年, immutable
     #   因为已经是 .min 版本且文件名带版本号后，重命名 = 改版本，不会被覆盖
-    # - 业务 CSS/JS（main.css, main.js, thumb_fallback.js）→ max-age=5分钟
+    # - 业务 CSS/JS（main.css, main.js）→ max-age=5分钟
     #   偶尔会改，但允许用户拿到旧版本 5 分钟
     # - 图片（thumb/preview/*.webp、uploads/*）→ max-age=1天
     #
@@ -332,7 +332,7 @@ def create_app() -> Flask:
         if "/static/vendor/" in path:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         # 业务 CSS/JS 短缓存
-        elif path.endswith(("/main.css", "/main.js", "/thumb_fallback.js")):
+        elif path.endswith(("/main.css", "/main.js")):
             response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
         # 图片缩略图 / 预览 / 用户上传
         elif _re.search(r"\.(webp|png|jpe?g|gif|svg|woff2?|ttf|eot|ico)(\?.*)?$", path, _re.I):
