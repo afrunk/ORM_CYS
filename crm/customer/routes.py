@@ -969,19 +969,26 @@ def customer_list():
 @customer_bp.route("/summary/today-created-count")
 @login_required
 def today_created_count():
-    """返回当天（北京时间 00:00 ~ 23:59）的新增客户总量（按 created_at）。
+    """返回当天（北京时间 00:00 ~ 23:59）的「派出」客户总量（按 dispatch_time）。
 
     说明：
-    - 这里统计的是「系统内所有客户」的新增数量
+    - 卡片文案为「当日派出客户」，统计的是今天**被系统派单出去**的客户数量
+      （即今天触发了派单流程的客户，含历史录入但今天才派出去的）
     - 不再根据当前用户角色做任何过滤（运营 / 管理员 / 销售看到的都是同一个总数）
+
+    变更记录：
+    - 2026-07-05 用户反馈：原口径（按 created_at）只统计今天新录入的客户（4 条），
+      但客户列表按 dispatch_time 筛选会显示 31 条，数字不一致易造成误解。
+      改为按 dispatch_time 统计后与列表口径对齐。
     """
 
     start_dt, end_dt = get_shift_window_utc()
 
     count = (
         Customer.query.filter(
-            Customer.created_at >= start_dt,
-            Customer.created_at <= end_dt,
+            Customer.dispatch_time >= start_dt,
+            Customer.dispatch_time <= end_dt,
+            Customer.dispatch_time.isnot(None),
         )
         .with_entities(func.count(Customer.id))
         .scalar()
@@ -1044,15 +1051,18 @@ def region_stats():
     for idx, row in enumerate(all_operator_counts, 1):
         op_rank_map[row.id] = (idx, row.username, int(row.count))
 
-    # 按地区统计新增客户数量
+    # 按地区统计「派出」客户数量（与顶部"当日派出客户"卡片口径一致：按 dispatch_time）
+    # 2026-07-05 用户反馈：原口径（created_at）只算今天新录入的（内蒙 4 / 西北 6），
+    # 跟客户列表按 dispatch_time 筛出来的数量不一致。改为 dispatch_time 后与列表对齐。
     region_counts = (
         db.session.query(
             Customer.region,
             func.count(Customer.id).label("count"),
         )
         .filter(
-            Customer.created_at >= start_dt,
-            Customer.created_at <= end_dt,
+            Customer.dispatch_time >= start_dt,
+            Customer.dispatch_time <= end_dt,
+            Customer.dispatch_time.isnot(None),
             Customer.region.isnot(None),
             Customer.region != "",
         )
