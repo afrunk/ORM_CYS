@@ -14,26 +14,25 @@ from .models import Customer, Notification, User
 def send_assignment_notification(sales: User, customer: Customer) -> None:
     """派单通知：通过邮件发送。
 
-    如果销售有邮箱，则发送邮件通知；否则仅记录到通知表。
+    如果销售有邮箱，则**异步**发送邮件通知；否则仅记录到通知表。
+
+    关键：所有 SMTP 操作放到 daemon 线程里执行，避免阻塞调用方
+    （reassign_timeouts 循环调用本函数，慢 SMTP 不能拖垮整个派单事务）。
     """
-    
+
     # 构建通知内容
     content = f"新客户派单：{customer.name}，电话：{customer.phone or '无'}"
-    
+
     # 优先使用邮箱发送
     channel = "email" if sales.email else "none"
     status = "sent"
-    
+
     if sales.email:
-        try:
-            send_email_notification(sales, customer)
-            status = "sent"
-        except Exception as e:
-            current_app.logger.error(f"发送邮件通知失败：{e}")
-            status = "failed"
-            channel = "email_failed"
-    
-    # 记录到通知表
+        # 异步发送邮件：派单事务不等 SMTP，立刻返回
+        _async_send_email(sales, customer)
+        status = "sent"
+
+    # 记录到通知表（立即可见）
     record = Notification(
         customer_id=customer.id,
         sales_id=sales.id,
@@ -42,11 +41,36 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
         status=status,
     )
     db.session.add(record)
-    
+
     if status == "sent":
-        current_app.logger.info(f"[通知] 向销售 {sales.username} ({sales.email}) 发送派单通知：{content}")
+        current_app.logger.info(
+            f"[通知] 已提交异步邮件任务至 {sales.username} ({sales.email})：{content}"
+        )
     else:
         current_app.logger.warning(f"[通知失败] 向销售 {sales.username} 发送派单通知失败")
+
+
+def _async_send_email(sales: User, customer: Customer) -> None:
+    """后台线程发邮件，与调用方完全解耦。
+
+    用 daemon=True：主进程退出时线程自动结束，避免僵尸 SMTP 连接。
+    daemonic 线程中无法再 fork，但 SMTP 发送本身是阻塞 IO，可以正常跑。
+    """
+    import threading
+
+    def _worker() -> None:
+        try:
+            send_email_notification(sales, customer)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                current_app.logger.error(
+                    f"[异步邮件失败] {sales.username} <{sales.email}>: {exc}"
+                )
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_worker, name=f"smtp-send-{sales.id}", daemon=True)
+    t.start()
 
 
 def send_email_notification(sales: User, customer: Customer) -> None:
@@ -202,9 +226,15 @@ def send_email_notification(sales: User, customer: Customer) -> None:
     html_part = MIMEText(html_content, 'html', 'utf-8')
     msg.attach(html_part)
     
-    # 发送邮件
+    # 发送邮件（带超时，避免 SMTP 服务器挂起时阻塞整个 reassign 任务）
+    # 4. 连接超时 5 秒；读取超时 8 秒（QQ/163 邮件服务器如果响应慢也不超过这个时间）。
+    # 这样 50 个超时单最多耗时 (5+8) * 50 = 6.5 分钟，不会无限阻塞。
     try:
-        server = smtplib.SMTP(app.config["MAIL_SERVER"], app.config["MAIL_PORT"])
+        server = smtplib.SMTP(
+            app.config["MAIL_SERVER"],
+            app.config["MAIL_PORT"],
+            timeout=8,
+        )
         server.starttls()
         server.login(mail_username, mail_password)
         server.send_message(msg)

@@ -7,9 +7,15 @@ from crm.customer.routes import reassign_timeouts
 
 
 def create_flask_app() -> "Flask":
-    """兼容 WSGI 的应用创建函数。"""
+    """兼容 WSGI 的应用创建函数。
+
+    注意：不要在模块顶层调用 create_app()！
+    - Gunicorn 通过 `app:create_flask_app` 加载时，模块顶层执行会让工厂被调用两次
+      （顶层一次 + Gunicorn 加载时又一次），导致 scheduler、蓝图重复注册。
+    - Flask debug 模式（reloader）下也会让模块被执行两次。
+    所以这里只提供工厂函数，调用方按需调用。
+    """
     from flask import Flask
-    from flask import Flask as _Flask
 
     app: "Flask" = create_app()
 
@@ -31,9 +37,9 @@ def create_flask_app() -> "Flask":
     return app
 
 
-app = create_flask_app()
-
 if __name__ == "__main__":
+    # 直接 python app.py 启动时，正常构造并运行
+    app = create_flask_app()
     # 对外开放 8000 端口（启用多线程，避免慢请求阻塞健康检查）
     from werkzeug.serving import make_server
     import threading

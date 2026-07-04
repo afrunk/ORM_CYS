@@ -47,4 +47,6 @@ htmlcov/
 *.tmp
 *.bak
 test_email.py
+hunt_db.py
+smoke_test.py
 

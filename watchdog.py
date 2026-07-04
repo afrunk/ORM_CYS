@@ -26,12 +26,24 @@ APP_PORT = 8000
 CHECK_HOST = "127.0.0.1"
 HEALTH_URL = f"http://{CHECK_HOST}:{APP_PORT}/health"
 STARTUP_URL = f"http://{CHECK_HOST}:{APP_PORT}/"
+ONLINE_USERS_URL = f"http://{CHECK_HOST}:{APP_PORT}/metrics/online-users"
 
 STARTUP_TIMEOUT = 20
 HEALTH_INTERVAL = 5
 HEALTH_TIMEOUT = 10  # 单次健康检查超时（秒），放宽以应对慢请求
 MAX_RETRIES = 6      # 连续失败次数阈值（避免偶发慢请求触发重启）
 KILL_TIMEOUT = 10
+# 熔断：如果连续 CRASH_LIMIT 次重启后新进程在 READY_GRACE 秒内仍然立刻崩，
+# 判定为不可恢复故障，停止 watchdog 重启，避免 1 秒一次循环浪费资源。
+CRASH_LIMIT = 5
+READY_GRACE = 30
+# 卡顿检测：单次 /health 请求耗时超过 SLOW_THRESHOLD 秒算"慢"。
+# 连续 SLOW_CONSECUTIVE 次慢请求视为"卡顿"，只打 WARN 不重启
+# （重启解决不了慢的问题，反而会丢弃所有在线用户会话）。
+SLOW_THRESHOLD = 5.0
+SLOW_CONSECUTIVE = 3
+# 在线用户统计上报间隔（秒）
+ONLINE_REPORT_INTERVAL = 60
 
 LOG_DIR = Path(__file__).parent
 LOG_FILE = LOG_DIR / "watchdog.log"
@@ -159,7 +171,17 @@ class FlaskWatcher:
         self.pid: int | None = None
         self.fail_count = 0
         self.restart_count = 0
+        self.crash_count = 0           # 连续启动后立即崩溃的次数
+        self.last_start_time: float = 0.0
         self.output_reader: FlaskOutputReader | None = None
+        # 标记当前 Flask 是否被 watchdog 自己主动终止（与"崩溃"区分），
+        # 避免把正常 kill 当成异常退出，导致 kill 后立刻又重启、再 kill 的死循环。
+        self.killed_by_us: bool = False
+        # 卡顿检测：连续 SLOW_CONSECUTIVE 次响应慢时 +1，正常响应后清零。
+        # 注意：slow_count 只触发 WARN 日志，不计入 fail_count，不重启。
+        self.slow_count = 0
+        # 在线用户数上报时间戳
+        self.last_metrics_report: float = 0.0
 
     def _is_process_alive(self, pid: int) -> bool:
         """检查指定 PID 的进程是否存活。"""
@@ -219,14 +241,49 @@ class FlaskWatcher:
     def start_flask(self) -> bool:
         """启动 Flask 子进程，返回是否成功。"""
         import shutil
+        import secrets
 
-        python_bin = "python3" if shutil.which("python3") else sys.executable
+        # 优先使用 venv 内的 python（项目依赖在 venv 里）；
+        # 否则退回系统 python3。
+        # 关键修复：之前始终用系统 python3 跑 app.py，结果缺依赖启动失败。
+        venv_dir = Path(__file__).parent / "venv"
+        venv_python = (
+            venv_dir / "bin" / "python"
+            if (venv_dir / "bin" / "python").exists()
+            else None
+        )
+        if venv_python and venv_python.exists():
+            python_bin = str(venv_python)
+        elif shutil.which("python3"):
+            python_bin = "python3"
+        else:
+            python_bin = sys.executable
+
+        # 生成 watchdog 与 Flask 之间的共享 token，写到 instance/watchdog_token
+        # 让 metrics 接口只能被本机 watchdog 读取，避免任意本地进程读到用户 IP。
+        # 注：每次 watchdog 启动 Flask 时都重新生成，旧的自动失效。
+        instance_dir = Path(__file__).parent / "instance"
+        token_path = instance_dir / "watchdog_token"
+        watchdog_token = secrets.token_urlsafe(32)
+        try:
+            instance_dir.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(watchdog_token, encoding="utf-8")
+            # 让 metrics 端点能读到
+            self._watchdog_token = watchdog_token
+        except OSError as e:
+            log(f"[START] 无法写 watchdog_token: {e}，metrics 接口将拒绝所有本地请求", "WARNING")
+            self._watchdog_token = ""
 
         log("=" * 60)
         log(f"[START] 准备启动 Flask 应用...")
         log(f"        Python: {python_bin}")
         log(f"        监听地址: {BIND_HOST}:{APP_PORT}")
         log("=" * 60)
+
+        # 把 token 通过环境变量传给 Flask 子进程
+        env = os.environ.copy()
+        if self._watchdog_token:
+            env["CRM_WATCHDOG_TOKEN"] = self._watchdog_token
 
         try:
             self.process = subprocess.Popen(
@@ -235,12 +292,15 @@ class FlaskWatcher:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env=env,
                 text=True,
                 bufsize=1,
             )
             self.pid = self.process.pid
+            self.killed_by_us = False  # 新一轮生命周期，重置主动终止标志
             self.output_reader = FlaskOutputReader(self.process)
             log(f"[START] Flask 进程已启动 (PID: {self.pid})")
+            self.last_start_time = time.time()
             return True
         except Exception as e:
             log(f"[START] 启动 Flask 失败: {e}", "ERROR")
@@ -252,6 +312,9 @@ class FlaskWatcher:
             log("[KILL] 没有记录的进程 PID，跳过")
             return
 
+        # 关键修复：在发送信号前先打上"主动终止"标记，
+        # 主循环看到 process 退出时就不会把它误判为"崩溃 → 立刻重启"。
+        self.killed_by_us = True
         log(f"[KILL] 开始终止进程树，根 PID: {self.pid}")
 
         # 关闭输出重定向
@@ -338,8 +401,27 @@ class FlaskWatcher:
         log(f"[READY] 启动超时 ({STARTUP_TIMEOUT}秒)", "WARNING")
         return False
 
+    def probe_health(self) -> tuple[bool, float, int]:
+        """真探测 /health：返回 (ok, latency_seconds, status_code)。
+
+        ok=True 仅当：进程存活 且 /health 在 HEALTH_TIMEOUT 内返回 2xx。
+        """
+        if self.process is None or self.process.poll() is not None:
+            return (False, 0.0, 0)
+        start = time.monotonic()
+        try:
+            resp = requests.get(HEALTH_URL, timeout=HEALTH_TIMEOUT)
+            latency = time.monotonic() - start
+            if 200 <= resp.status_code < 300:
+                return (True, latency, resp.status_code)
+            return (False, latency, resp.status_code)
+        except requests.exceptions.Timeout:
+            return (False, time.monotonic() - start, 0)
+        except Exception:
+            return (False, time.monotonic() - start, 0)
+
     def check_health(self) -> bool:
-        """检查 Flask 进程是否存在。"""
+        """仅检查 Flask 进程是否存在（兼容原方法）。"""
         if self.process is None or self.process.poll() is not None:
             log("[HEALTH] Flask 进程不存在", "WARNING")
             return False
@@ -359,6 +441,33 @@ class FlaskWatcher:
             return False
         except Exception:
             return False
+
+    def report_online_users(self) -> None:
+        """拉一次 /metrics/online-users，把在线 IP 数和列表打到 watchdog.log。
+
+        调用方需要保证 self.last_metrics_report 非零（避免启动后立即打一行）。
+        自动带 X-Watchdog-Token 头，由 Flask 端校验。
+        """
+        try:
+            headers = {}
+            token = getattr(self, "_watchdog_token", "")
+            if token:
+                headers["X-Watchdog-Token"] = token
+            resp = requests.get(ONLINE_USERS_URL, timeout=5, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                count = data.get("count", 0)
+                ips = data.get("ips", [])
+                ttl = data.get("ttl_seconds", 0)
+                log(f"[ONLINE] 当前在线用户数={count} (TTL={ttl}s, IP: {ips})")
+            elif resp.status_code == 403:
+                log("[ONLINE] metrics 接口拒绝访问 (403)，token 不匹配或未配置", "WARNING")
+            else:
+                log(f"[ONLINE] metrics 返回 {resp.status_code}", "WARNING")
+        except requests.exceptions.Timeout:
+            log("[ONLINE] metrics 请求超时，跳过本轮上报", "WARNING")
+        except Exception as e:
+            log(f"[ONLINE] 上报失败: {type(e).__name__} - {e}", "WARNING")
 
     def run(self) -> None:
         log("=" * 60)
@@ -391,20 +500,73 @@ class FlaskWatcher:
             if self.output_reader:
                 self.output_reader.read_available()
 
+            # 如果当前进程已稳定运行超过 READY_GRACE 秒，重置熔断计数
+            if (
+                self.process
+                and self.process.poll() is None
+                and self.last_start_time
+                and (time.time() - self.last_start_time) > READY_GRACE
+                and self.crash_count > 0
+            ):
+                log(f"[WATCH] 进程已稳定运行 {READY_GRACE} 秒以上，重置熔断计数")
+                self.crash_count = 0
+
             # 检查进程状态
             if self.process and self.process.poll() is not None:
                 retcode = self.process.poll()
-                log(f"[WATCH] 检测到 Flask 进程异常退出 (返回码: {retcode})", "WARNING")
-                self.fail_count = MAX_RETRIES
+                alive_for = time.time() - self.last_start_time if self.last_start_time else 0
+                if self.killed_by_us:
+                    # 是我们自己刚刚 kill 的，不算异常退出，避免无意义重启。
+                    log(f"[WATCH] Flask 已被主动终止 (存活 {alive_for:.1f} 秒)")
+                    # 不动 fail_count，让上层决定何时（是否）重启。
+                else:
+                    log(f"[WATCH] 检测到 Flask 进程异常退出 (返回码: {retcode}, 存活 {alive_for:.1f} 秒)", "WARNING")
+                    self.fail_count = MAX_RETRIES
+                    # 熔断：短时间内连续崩溃，直接放弃重启
+                    if alive_for < READY_GRACE:
+                        self.crash_count += 1
+                        if self.crash_count >= CRASH_LIMIT:
+                            log("=" * 60, "ERROR")
+                            log(f"[FATAL] 连续 {self.crash_count} 次启动后立即崩溃，疑似配置/代码故障", "ERROR")
+                            log("[FATAL] 停止自动重启，请人工排查日志后手动恢复", "ERROR")
+                            log("=" * 60, "ERROR")
+                            self.kill_flask()
+                            sys.exit(2)
+                    else:
+                        self.crash_count = 0
             else:
-                ok = self.check_health()
+                # 进程存活 → 真探测 /health 的响应时间
+                ok, latency, code = self.probe_health()
                 if ok:
                     if self.fail_count > 0:
                         log(f"[WATCH] Flask 恢复正常 (之前连续失败 {self.fail_count} 次)")
                     self.fail_count = 0
+                    # 卡顿检测：仅记录 + 打 WARN，不触发重启
+                    if latency > SLOW_THRESHOLD:
+                        self.slow_count += 1
+                        if self.slow_count >= SLOW_CONSECUTIVE:
+                            log(
+                                f"[SLOW] Flask 响应慢: 连续 {self.slow_count} 次耗时 > {SLOW_THRESHOLD}s "
+                                f"(本次 {latency:.2f}s, HTTP {code})。建议检查数据库/磁盘/CPU，"
+                                f"但不会自动重启（重启解决不了慢，反而丢失在线会话）",
+                                "WARNING",
+                            )
+                    else:
+                        if self.slow_count > 0:
+                            log(f"[SLOW] 恢复正常 (之前连续慢 {self.slow_count} 次)")
+                        self.slow_count = 0
                 else:
                     self.fail_count += 1
-                    log(f"[WATCH] Flask 健康检查失败 ({self.fail_count}/{MAX_RETRIES})", "WARNING")
+                    log(f"[WATCH] Flask 健康检查失败 ({self.fail_count}/{MAX_RETRIES}, latency={latency:.2f}s code={code})", "WARNING")
+
+            # 在线用户统计：每 ONLINE_REPORT_INTERVAL 秒打一次
+            now = time.time()
+            if self.last_metrics_report > 0 and now - self.last_metrics_report >= ONLINE_REPORT_INTERVAL:
+                self.report_online_users()
+                self.last_metrics_report = now
+            elif self.last_metrics_report == 0:
+                # 第一次循环开始计时，下一个周期才打
+                self.last_metrics_report = now
 
             # 触发重启
             if self.fail_count >= MAX_RETRIES:
@@ -424,7 +586,9 @@ class FlaskWatcher:
                     log("[RESTART] 步骤 4: 等待新进程就绪...")
                     if self.wait_for_ready():
                         self.fail_count = 0
-                        log("[RESTART] 成功！Flask 已恢复正常服务")
+                        # 仅当新进程稳定运行超过 READY_GRACE 秒，才认为恢复正常
+                        # 否则下一次崩溃会被计入熔断
+                        log(f"[RESTART] 成功！Flask 已恢复正常服务（将观察 {READY_GRACE} 秒确认稳定）")
                     else:
                         log("[RESTART] 新进程启动超时，稍后将重试...", "WARNING")
                         time.sleep(5)

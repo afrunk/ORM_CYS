@@ -34,10 +34,8 @@
           <td>
             {% if c.image_path %}
             {% set thumb_path = thumbnail_map.get(c.id) %}
-            {% set preview_path = preview_map.get(c.id) %}
             {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
             {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
-            {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
             <picture>
               {% if thumb_path %}
               <source srcset="{{ thumb_url }}" type="image/webp">
@@ -45,7 +43,7 @@
             <img
               class="customer-thumbnail"
                 src="{{ thumb_url }}"
-                data-image-url="{{ preview_url }}"
+                data-image-url="{{ full_image_url }}"
               alt="客户图片"
                 width="40"
                 height="40"

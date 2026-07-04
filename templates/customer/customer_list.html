@@ -71,10 +71,11 @@
               {% if c.image_path %}
               <div class="image-preview-container">
                 {% set thumb_path = thumbnail_map.get(c.id) %}
-                {% set preview_path = preview_map.get(c.id) %}
                 {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
                 {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
-                {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
+                {# preview_url 不在列表渲染时同步生成，改为 hover/click 时前端按需加载。 #}
+                {# 这里先把 data-preview-url 指向原图，浏览器拉到的就是原图；后台异步预热后
+                   用户再次点击时由 JS 替换为 preview URL。 #}
                 <picture>
                   {% if thumb_path %}
                   <source srcset="{{ thumb_url }}" type="image/webp">
@@ -84,7 +85,7 @@
                        width="96"
                        height="96"
                      class="customer-thumbnail"
-                       data-preview-url="{{ preview_url }}"
+                       data-preview-url="{{ full_image_url }}"
                        data-full-url="{{ full_image_url }}"
                        loading="lazy"
                        decoding="async"
@@ -557,10 +558,8 @@
             {% if c.image_path %}
             <div class="image-preview-container">
               {% set thumb_path = thumbnail_map.get(c.id) %}
-              {% set preview_path = preview_map.get(c.id) %}
               {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
               {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
-              {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
               <picture>
                 {% if thumb_path %}
                 <source srcset="{{ thumb_url }}" type="image/webp">
@@ -570,7 +569,7 @@
                      width="96"
                      height="96"
                    class="customer-thumbnail"
-                     data-preview-url="{{ preview_url }}"
+                     data-preview-url="{{ full_image_url }}"
                      data-full-url="{{ full_image_url }}"
                      loading="lazy"
                      decoding="async"

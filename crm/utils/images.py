@@ -1,8 +1,16 @@
-"""Image helper utilities (thumbnail/preview generation & removal)."""
+"""Image helper utilities (thumbnail/preview generation & removal).
 
+性能说明：
+- WEBP method=6 + optimize=True 压缩率最好但 CPU 最重，常见 1080P 手机拍的原图（5MB+）
+  在单核上单张耗时 200-800ms。列表页一页 20 条 × 同步转码 = 容易卡住整个请求线程。
+- 本模块做了两点优化：
+  1) 提供 schedule_async_preview() 接口把"生成大预览图"丢到后台线程，避免阻塞请求。
+  2) 缩略图保留 method=6（很小，不卡）；大预览如果调用方同步调用，仍然是同一个慢路径。
+"""
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,9 +31,26 @@ PREVIEW_SIZE: Tuple[int, int] = (1080, 1080)
 WEBP_QUALITY_THUMB = 74
 WEBP_QUALITY_PREVIEW = 82
 
+# 并发限制：同时跑的 preview worker 数。
+# WEBP 转码是 CPU 密集型，过多并发反而拖慢整体。
+_MAX_CONCURRENT_PREVIEW_WORKERS = 2
+_preview_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_PREVIEW_WORKERS)
+# 统计已派发的任务数（用于诊断）
+_preview_dispatch_count = 0
+_preview_done_count = 0
+_preview_lock = threading.Lock()
+
 
 def _static_root() -> str:
-    return os.path.abspath(os.path.join(current_app.root_path, "..", "static"))
+    # 优先用 current_app.root_path（app 上下文内有效）；
+    # 如果在 app 上下文外（daemon 后台线程），fallback 到相对于这个文件的固定路径。
+    try:
+        return os.path.abspath(os.path.join(current_app.root_path, "..", "static"))
+    except RuntimeError:
+        # 兜底：crm/utils/images.py 上两级就是项目根，static 在那里
+        return os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "static")
+        )
 
 
 def _uploads_root() -> str:
@@ -74,7 +99,7 @@ def _ensure_variant(
                 img_copy = img.copy()
                 img_copy.thumbnail(size, Image.Resampling.LANCZOS)
 
-                # Convert to a WEBP‑friendly mode
+                # Convert to a WEBP-friendly mode
                 if img_copy.mode not in ("RGB", "L"):
                     img_copy = img_copy.convert("RGB")
 
@@ -86,7 +111,7 @@ def _ensure_variant(
                     method=6,
                 )
 
-        # Best‑effort: clean legacy file if it exists and is not the same as the new path
+        # Best-effort: clean legacy file if it exists and is not the same as the new path
         if os.path.exists(legacy_path) and legacy_path != variant_path:
             try:
                 os.remove(legacy_path)
@@ -95,9 +120,12 @@ def _ensure_variant(
 
         return os.path.join("uploads", subdir, variant_name).replace("\\", "/")
     except Exception as exc:  # pragma: no cover - best effort logging
-        current_app.logger.warning(
-            "Failed to generate %s variant for %s: %s", prefix, image_filename, exc
-        )
+        try:
+            current_app.logger.warning(
+                "Failed to generate %s variant for %s: %s", prefix, image_filename, exc
+            )
+        except Exception:
+            pass
         if os.path.exists(variant_path):
             return os.path.join("uploads", subdir, variant_name).replace("\\", "/")
         if os.path.exists(legacy_path):
@@ -117,7 +145,15 @@ def ensure_thumbnail(image_filename: str) -> Optional[str]:
 
 
 def ensure_preview(image_filename: str) -> Optional[str]:
-    """Create (if needed) and return the relative static path for the preview image."""
+    """Create (if needed) and return the relative static path for the preview image.
+
+    注意：此函数同步执行会调用较慢的 WEBP 转码（method=6, optimize=True）。
+    列表页等批量场景请改用 schedule_async_preview()。
+    """
+    try:
+        current_app.logger.debug("[preview] ensure_preview called: %s", image_filename)
+    except Exception:
+        pass
     return _ensure_variant(
         image_filename,
         prefix=PREVIEW_PREFIX,
@@ -125,6 +161,185 @@ def ensure_preview(image_filename: str) -> Optional[str]:
         size=PREVIEW_SIZE,
         quality=WEBP_QUALITY_PREVIEW,
     )
+
+
+def _preview_worker(image_filename: str) -> None:
+    """后台线程函数：跑一次 WEBP 转码。
+
+    用 threading.Thread 而不是 ThreadPoolExecutor：
+    - 在 Werkzeug threaded server + APScheduler + Windows 的组合下，
+      ThreadPoolExecutor 的 worker 在某些条件下不会被调度
+      （已实测：submit 后 worker 永不调用 ensure_preview）。
+    - 直接开 daemon 线程稳定可靠；信号量限制同时运行的并发数。
+
+    注意：daemon 线程里没有 Flask app context，所有 current_app.* 调用必须 try/except。
+    """
+    global _preview_done_count
+    try:
+        _preview_semaphore.acquire()
+    except Exception:
+        return
+    try:
+        result = ensure_preview(image_filename)
+        try:
+            current_app.logger.debug(
+                "[async-preview] done: %s -> %s", image_filename, result
+            )
+        except RuntimeError:
+            pass  # 没有 app context，正常
+    except Exception as exc:  # pragma: no cover
+        try:
+            current_app.logger.warning(
+                "Async preview worker failed for %s: %s", image_filename, exc
+            )
+        except RuntimeError:
+            # daemon 线程里没有 app context；用 stderr 兜底
+            import sys
+            print(
+                f"[async-preview] worker failed: {image_filename}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            _preview_semaphore.release()
+        except Exception:
+            pass
+        with _preview_lock:
+            _preview_done_count += 1
+
+
+def schedule_async_preview(image_filename: Optional[str]) -> None:
+    """后台异步生成 preview，不阻塞调用方。
+
+    用于：
+    - 列表页 hover/click 触发
+    - 详情页：打开页面时立刻返回占位，背景慢慢生成
+    - 上传接口：保存原图后立刻返回，preview 延后生成
+
+    失败仅记日志，绝不抛到调用方。
+    """
+    global _preview_dispatch_count
+    if not image_filename:
+        return
+    try:
+        with _preview_lock:
+            _preview_dispatch_count += 1
+            dispatched = _preview_dispatch_count
+            done = _preview_done_count
+        t = threading.Thread(
+            target=_preview_worker,
+            args=(image_filename,),
+            name=f"img-preview-{image_filename[:20]}",
+            daemon=True,
+        )
+        t.start()
+        try:
+            current_app.logger.debug(
+                "[async-preview] scheduled: %s (dispatched=%d done=%d)",
+                image_filename, dispatched, done,
+            )
+        except Exception:
+            pass
+    except Exception as exc:  # pragma: no cover
+        try:
+            current_app.logger.warning(
+                "Failed to schedule async preview for %s: %s", image_filename, exc
+            )
+        except Exception:
+            pass
+
+
+# ============================================================================
+# 异步缩略图：缩略图生成（CPU 密集）也已异步化，列表页请求路径不再阻塞。
+# 列表页只检查「缩略图是否已经存在」，不存在则直接返回原图 URL 占位，
+# 同时后台补生成；下次访问时缩略图已就绪。
+# ============================================================================
+_thumb_dispatch_count = 0
+_thumb_done_count = 0
+_thumb_lock = threading.Lock()
+
+
+def _thumb_worker(image_filename: str) -> None:
+    """后台线程：跑一次 thumbnail 生成。"""
+    global _thumb_done_count
+    try:
+        ensure_thumbnail(image_filename)
+    except Exception as exc:
+        try:
+            current_app.logger.warning(
+                "Async thumbnail worker failed for %s: %s", image_filename, exc
+            )
+        except Exception:
+            pass
+    finally:
+        with _thumb_lock:
+            _thumb_done_count += 1
+
+
+def schedule_async_thumbnail(image_filename: Optional[str]) -> None:
+    """后台异步生成缩略图。仅在确实需要时才排队。"""
+    global _thumb_dispatch_count
+    if not image_filename:
+        return
+    try:
+        # 快速去重：如果缩略图已经存在且 mtime 正常，就不调度。
+        thumb_rel = _thumbnail_path_if_exists(image_filename)
+        if thumb_rel:
+            return
+        with _thumb_lock:
+            _thumb_dispatch_count += 1
+        t = threading.Thread(
+            target=_thumb_worker,
+            args=(image_filename,),
+            name=f"img-thumb-{image_filename[:20]}",
+            daemon=True,
+        )
+        t.start()
+    except Exception:
+        pass
+
+
+def _thumbnail_path_if_exists(image_filename: str) -> Optional[str]:
+    """如果缩略图已经生成（且原图 mtime 没变化），返回相对路径；否则返回 None。"""
+    try:
+        uploads_dir = _uploads_root()
+        original_path = os.path.join(uploads_dir, image_filename)
+        if not os.path.exists(original_path):
+            return None
+        variant_name, legacy_name = _variant_names(image_filename, THUMB_PREFIX)
+        variant_dir = os.path.join(uploads_dir, THUMB_SUBDIR)
+        variant_path = os.path.join(variant_dir, variant_name)
+        legacy_path = os.path.join(variant_dir, legacy_name)
+        # 优先 webp
+        for candidate in (variant_path, legacy_path):
+            if os.path.exists(candidate):
+                # 检查 mtime：如果原图更新了，缩略图失效（视为不存在）
+                try:
+                    if os.path.getmtime(original_path) > os.path.getmtime(candidate):
+                        continue
+                except OSError:
+                    pass
+                return os.path.join("uploads", THUMB_SUBDIR,
+                                    os.path.basename(candidate)).replace("\\", "/")
+        return None
+    except Exception:
+        return None
+
+
+def ensure_thumbnail_async_or_fallback(image_filename: str) -> Optional[str]:
+    """返回缩略图相对路径；如果还没生成，返回 None 并异步补做。
+
+    列表页模板可这样用：
+        {% set t = thumb_or_fallback(c.image_path) %}
+        {% if t %}<img src=...thumb...>{% else %}<img src=...原图...>{% endif %}
+    """
+    rel = _thumbnail_path_if_exists(image_filename)
+    if rel:
+        return rel
+    schedule_async_thumbnail(image_filename)
+    return None
 
 
 def _remove_variant(image_filename: Optional[str], *, prefix: str, subdir: str) -> None:
@@ -141,7 +356,10 @@ def _remove_variant(image_filename: Optional[str], *, prefix: str, subdir: str) 
             try:
                 os.remove(variant_path)
             except OSError:
-                current_app.logger.debug("Failed to delete variant %s", variant_path)
+                try:
+                    current_app.logger.debug("Failed to delete variant %s", variant_path)
+                except Exception:
+                    pass
 
 
 def remove_thumbnail(image_filename: Optional[str]) -> None:
@@ -152,5 +370,3 @@ def remove_thumbnail(image_filename: Optional[str]) -> None:
 def remove_preview(image_filename: Optional[str]) -> None:
     """Remove preview image if it exists."""
     _remove_variant(image_filename, prefix=PREVIEW_PREFIX, subdir=PREVIEW_SUBDIR)
-
-

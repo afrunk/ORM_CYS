@@ -31,7 +31,14 @@ from ..models import (
 )
 from ..notifications import send_assignment_notification
 from ..permissions import login_required
-from ..utils.images import ensure_thumbnail, ensure_preview, remove_preview, remove_thumbnail
+from ..utils.images import (
+    ensure_preview,
+    ensure_thumbnail,
+    ensure_thumbnail_async_or_fallback,
+    remove_preview,
+    remove_thumbnail,
+    schedule_async_preview,
+)
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
 # 简单的进程内缓存：用于减轻 region-stats 接口的数据库压力
@@ -168,6 +175,138 @@ def _static_asset_exists(rel_path: str | None) -> bool:
     static_folder = current_app.static_folder
     candidate = Path(static_folder) / rel_path_clean
     return candidate.exists()
+
+
+def _compute_sales_stats(sales_users: list[User]) -> list[dict]:
+    """一次性 GROUP BY 算出所有销售的 accepted / converted 数量。
+
+    替代原来的 N×2 次单点 COUNT 查询。
+    """
+    if not sales_users:
+        return []
+
+    sales_ids = [s.id for s in sales_users]
+
+    accepted_rows = (
+        db.session.query(Customer.sales_id, func.count(Customer.id))
+        .filter(Customer.sales_id.in_(sales_ids), Customer.status == "accepted")
+        .group_by(Customer.sales_id)
+        .all()
+    )
+    converted_rows = (
+        db.session.query(Customer.sales_id, func.count(Customer.id))
+        .filter(
+            Customer.sales_id.in_(sales_ids),
+            Customer.is_converted.is_(True),
+        )
+        .group_by(Customer.sales_id)
+        .all()
+    )
+    accepted_map = {sid: cnt for sid, cnt in accepted_rows}
+    converted_map = {sid: cnt for sid, cnt in converted_rows}
+
+    result: list[dict] = []
+    for s in sales_users:
+        total_accepted = accepted_map.get(s.id, 0)
+        total_converted = converted_map.get(s.id, 0)
+        if total_accepted > 0:
+            conversion_rate = f"{(total_converted / total_accepted * 100):.1f}%"
+        else:
+            conversion_rate = "-"
+        result.append(
+            {
+                "user": s,
+                "conversion_rate": conversion_rate,
+                "accepted": total_accepted,
+                "converted": total_converted,
+            }
+        )
+    return result
+
+
+def _compute_next_sales_by_region() -> list[dict]:
+    """一次性查每个 (region, sales_id) 的最近派单时间，挑出每个 region 最早接单的销售。
+
+    替代原来嵌套循环里的 N*M 次 order_by().first() 查询。
+    """
+    # 1) 列出所有有配置地区的可用销售
+    region_rows = (
+        db.session.query(SalesProfile.service_region)
+        .filter(SalesProfile.service_region.isnot(None))
+        .distinct()
+        .all()
+    )
+    region_names = [r[0] for r in region_rows if r[0]]
+    if not region_names:
+        return []
+
+    # 2) 一次性查每个 region 下每个销售的最大 dispatch_time（按 sales 维度）
+    #    仅取 region ∈ 配置集合，且 sales 是 region 中的可用销售
+    sales_in_regions: dict[str, list[tuple[int, str, int | None]]] = {
+        r: [] for r in region_names
+    }
+    sales_rows = (
+        db.session.query(
+            User.id,
+            User.username,
+            SalesProfile.service_region,
+            SalesProfile.dispatch_order,
+        )
+        .join(SalesProfile, SalesProfile.user_id == User.id)
+        .filter(
+            User.role == "sales",
+            User.is_active.is_(True),
+            SalesProfile.is_available.is_(True),
+            SalesProfile.service_region.in_(region_names),
+        )
+        .all()
+    )
+    for sid, uname, region, dispatch_order in sales_rows:
+        if region in sales_in_regions:
+            sales_in_regions[region].append((sid, uname, dispatch_order))
+
+    # 3) 一次性查每个 region 下销售的最近派单时间
+    max_dispatch = (
+        db.session.query(
+            Customer.region,
+            Customer.sales_id,
+            func.max(Customer.dispatch_time).label("last_dt"),
+        )
+        .filter(
+            Customer.region.in_(region_names),
+            Customer.sales_id.isnot(None),
+            Customer.dispatch_time.isnot(None),
+        )
+        .group_by(Customer.region, Customer.sales_id)
+        .all()
+    )
+    last_time_map: dict[tuple[str, int], datetime] = {}
+    for region, sid, last_dt in max_dispatch:
+        if region and sid is not None and last_dt is not None:
+            last_time_map[(region, sid)] = last_dt
+
+    # 4) Python 里挑每个 region 最早的（与自动派单规则保持一致）
+    result: list[dict] = []
+    for region, sales_list in sales_in_regions.items():
+        if not sales_list:
+            continue
+        sales_sorted = sorted(
+            sales_list,
+            key=lambda item: (
+                last_time_map.get((region, item[0]), datetime.min),
+                item[2] if item[2] is not None else 0,
+                item[0],
+            ),
+        )
+        sid, uname, dispatch_order = sales_sorted[0]
+        result.append(
+            {
+                "region": region,
+                "username": uname,
+                "dispatch_order": dispatch_order,
+            }
+        )
+    return result
 
 
 def _auto_assign_sales(region: str | None = None, exclude_sales_id: int | None = None) -> User | None:
@@ -743,16 +882,21 @@ def customer_list():
     from ..models import SystemConfig
     system_dispatch_enabled = SystemConfig.get_bool("system_dispatch_enabled", default=False)
 
+    # 图片缩略图：列表渲染时只检查是否已存在，不做同步生成（CPU 密集）。
+    # 没生成完的图直接返回原图 URL 占位，同时后台异步补做。
     thumbnail_map = {}
-    preview_map = {}
+    pending_preview_files: list[str] = []
     for customer in customers:
-        if customer.image_path:
-            thumb_rel = ensure_thumbnail(customer.image_path)
-            if thumb_rel and _static_asset_exists(thumb_rel):
-                thumbnail_map[customer.id] = thumb_rel
-            preview_rel = ensure_preview(customer.image_path)
-            if preview_rel and _static_asset_exists(preview_rel):
-                preview_map[customer.id] = preview_rel
+        if not customer.image_path:
+            continue
+        thumb_rel = ensure_thumbnail_async_or_fallback(customer.image_path)
+        if thumb_rel:
+            thumbnail_map[customer.id] = thumb_rel
+        pending_preview_files.append(customer.image_path)
+
+    # 把 preview 全部丢到后台线程池（仅生成一次，再次访问直接命中缓存）
+    for fname in pending_preview_files:
+        schedule_async_preview(fname)
 
     # 如果是待分配销售 tab，需要加载销售列表供手动派单
     sales_users = None
@@ -768,98 +912,19 @@ def customer_list():
             .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
             .all()
         )
-        
-        # 为每个销售计算转化率
-        sales_with_stats = []
-        for s in sales_users:
-            total_accepted = Customer.query.filter(
-                Customer.sales_id == s.id,
-                Customer.status == "accepted"
-            ).count()
-            total_converted = Customer.query.filter(
-                Customer.sales_id == s.id,
-                Customer.is_converted.is_(True)
-            ).count()
-            
-            if total_accepted > 0:
-                conversion_rate = f"{(total_converted / total_accepted * 100):.1f}%"
-            else:
-                conversion_rate = "-"
-            
-            sales_with_stats.append({
-                "user": s,
-                "conversion_rate": conversion_rate,
-                "accepted": total_accepted,
-                "converted": total_converted,
-            })
+
+        # 修复 N+1：原本每个销售各做 2 条 COUNT(*)，N 个销售 = 2N 次 SQL。
+        # 改为一次性 GROUP BY 聚合，2 条 SQL 拿到全量数据。
+        sales_with_stats = _compute_sales_stats(sales_users)
 
     # 计算「各地区下一位待派销售」预览，仅在客户列表主 Tab 且超管/数据员时展示
     next_sales_by_region: list[dict] | None = None
     if active_tab == "list" and current.role in ("super_admin", "data_entry"):
-        next_sales_by_region = []
-
-        # 所有配置了服务地区的可用销售的地区列表
-        region_rows = (
-            db.session.query(SalesProfile.service_region)
-            .filter(SalesProfile.service_region.isnot(None))
-            .distinct()
-            .all()
-        )
-
-        for (region_name,) in region_rows:
-            if not region_name:
-                continue
-
-            region_sales = (
-                User.query.join(SalesProfile, SalesProfile.user_id == User.id)
-                .filter(
-                    User.role == "sales",
-                    User.is_active.is_(True),
-                    SalesProfile.is_available.is_(True),
-                    SalesProfile.service_region == region_name,
-                )
-                .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
-                .all()
-            )
-
-            if not region_sales:
-                continue
-
-            # 与自动派单规则保持一致：最久未在该地区接单的销售优先
-            last_time_map: dict[int, datetime] = {}
-            for s in region_sales:
-                q = Customer.query.filter(
-                    Customer.sales_id == s.id,
-                    Customer.region == region_name,
-                )
-                last_customer = (
-                    q.order_by(Customer.dispatch_time.desc(), Customer.id.desc())
-                    .first()
-                )
-                if last_customer and last_customer.dispatch_time:
-                    last_time_map[s.id] = last_customer.dispatch_time
-                else:
-                    last_time_map[s.id] = datetime.min
-
-            region_sales_sorted = sorted(
-                region_sales,
-                key=lambda s: (
-                    last_time_map.get(s.id, datetime.min),
-                    s.sales_profile.dispatch_order if s.sales_profile else 0,
-                    s.id,
-                ),
-            )
-
-            next_s = region_sales_sorted[0]
-            next_sales_by_region.append(
-                {
-                    "region": region_name,
-                    "username": next_s.username,
-                    "dispatch_order": next_s.sales_profile.dispatch_order
-                    if next_s.sales_profile
-                    else None,
-                }
-            )
+        # 修复嵌套循环 N+1：
+        # 原来每个地区每个销售都要单独查 Customer.order_by().first()，N 地区 × M 销售 = N*M 次 SQL。
+        # 改为：先一次性查所有 (region, sales_id, max(dispatch_time)) 的元组，
+        # 在 Python 里挑出每个 region 的最早派单时间，再选该 region 中对应的销售。
+        next_sales_by_region = _compute_next_sales_by_region()
 
     # 获取所有不重复的地区列表，用于筛选下拉框
     regions = (
@@ -881,7 +946,6 @@ def customer_list():
         pagination=pagination,
         per_page=per_page,
         thumbnail_map=thumbnail_map,
-        preview_map=preview_map,
         current_filters=request.args.to_dict(),
         system_dispatch_enabled=system_dispatch_enabled,
         active_tab=active_tab,
@@ -1182,8 +1246,9 @@ def customer_create():
                 file_path = os.path.join(upload_dir, filename)
                 file.save(file_path)
                 image_path = filename
+                # 缩略图同步生成（很小，不卡）；预览图丢后台线程池
                 ensure_thumbnail(image_path)
-                ensure_preview(image_path)
+                schedule_async_preview(image_path)
 
         # 默认先创建为“未分配”或“待派单”状态
         customer = Customer(
@@ -1325,7 +1390,7 @@ def customer_edit(customer_id: int):
                 file.save(file_path)
                 customer.image_path = filename
                 ensure_thumbnail(filename)
-                ensure_preview(filename)
+                schedule_async_preview(filename)
 
         # 注意：编辑时不修改销售分配和运营人员
         # 销售分配应通过「待分配销售」tab 或重新派单功能完成
@@ -1431,7 +1496,7 @@ def customer_detail(customer_id: int):
             filename = f"{timestamp}_invalid_{filename}"
             invalid_file.save(os.path.join(upload_dir, filename))
             customer.invalid_proof_image = filename
-            ensure_preview(filename)
+            schedule_async_preview(filename)
 
         new_remark = request.form.get("remark", "").strip()
         if new_remark:
@@ -1441,10 +1506,15 @@ def customer_detail(customer_id: int):
         flash("客户跟进信息已保存。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 
-    image_preview_path = ensure_preview(customer.image_path) if customer.image_path else None
-    invalid_preview_path = (
-        ensure_preview(customer.invalid_proof_image) if customer.invalid_proof_image else None
-    )
+    # 大预览图：异步生成，避免每次打开详情页阻塞渲染线程。
+    # 同时调度一次"无效佐证图"的预览，保持原行为。
+    if customer.image_path:
+        schedule_async_preview(customer.image_path)
+    if customer.invalid_proof_image:
+        schedule_async_preview(customer.invalid_proof_image)
+
+    image_preview_path = customer.image_path  # 模板侧 fallback 到原图
+    invalid_preview_path = customer.invalid_proof_image
 
     _role_key = "".join(
         unicodedata.normalize("NFKC", str(current.role or "")).split()
@@ -1500,15 +1570,16 @@ def public_pool():
     customers = query.order_by(Customer.id.desc()).all()
 
     thumbnail_map = {}
-    preview_map = {}
+    pending_preview_files: list[str] = []
     for customer in customers:
-        if customer.image_path:
-            thumb_rel = ensure_thumbnail(customer.image_path)
-            if thumb_rel and _static_asset_exists(thumb_rel):
-                thumbnail_map[customer.id] = thumb_rel
-            preview_rel = ensure_preview(customer.image_path)
-            if preview_rel and _static_asset_exists(preview_rel):
-                preview_map[customer.id] = preview_rel
+        if not customer.image_path:
+            continue
+        thumb_rel = ensure_thumbnail_async_or_fallback(customer.image_path)
+        if thumb_rel:
+            thumbnail_map[customer.id] = thumb_rel
+        pending_preview_files.append(customer.image_path)
+    for fname in pending_preview_files:
+        schedule_async_preview(fname)
 
     sales_users = []
     show_contact = True
@@ -1530,7 +1601,6 @@ def public_pool():
         "customer/public_pool.html",
         customers=customers,
         thumbnail_map=thumbnail_map,
-        preview_map=preview_map,
         sales_users=sales_users,
         show_contact=show_contact,
     )
