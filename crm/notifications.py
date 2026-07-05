@@ -53,10 +53,13 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
 def _async_send_email(sales: User, customer: Customer) -> None:
     """后台线程发邮件，与调用方完全解耦。
 
-    用 daemon=True：主进程退出时线程自动结束，避免僵尸 SMTP 连接。
-    daemonic 线程中无法再 fork，但 SMTP 发送本身是阻塞 IO，可以正常跑。
+    复用 crm.utils.async_jobs.submit 的线程池：该提交器已自带
+    `app.app_context()` 兜底（fix 7ebfbee），daemon 线程里访问
+    `current_app` / `db.session` 不会再 RuntimeError。
+
+    失败仅记日志，绝不抛回调用方（派单事务不能因为 SMTP 慢/失败而回滚）。
     """
-    import threading
+    from .utils.async_jobs import submit as submit_async_job
 
     def _worker() -> None:
         try:
@@ -69,8 +72,7 @@ def _async_send_email(sales: User, customer: Customer) -> None:
             except Exception:
                 pass
 
-    t = threading.Thread(target=_worker, name=f"smtp-send-{sales.id}", daemon=True)
-    t.start()
+    submit_async_job(_worker)
 
 
 def send_email_notification(sales: User, customer: Customer) -> None:
