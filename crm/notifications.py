@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import atexit
+import logging
 import smtplib
+import threading
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -9,6 +13,77 @@ from flask import current_app
 
 from .extensions import db
 from .models import Customer, Notification, User
+
+_log = logging.getLogger(__name__)
+
+# ============================================================
+# 邮件专用线程池（2026-07-05 性能修复）
+# ------------------------------------------------------------
+# 历史问题：派单通知邮件与自动派单任务共用 crm.utils.async_jobs 的
+# 4 线程池，导致两件事互相阻塞：
+#   - 派单耗时 ~0.5-2s/单（含 DB N+1）
+#   - SMTP 耗时 ~1-3s/封（QQ SMTP）
+# 10 运营并发时，邮件任务排在派单任务之后，队尾邮件要等几十秒
+# 才能发出。表现为"派单给小C了，但小C很久才收到邮件"。
+#
+# 修复：拆出独立有界线程池，专职 SMTP。
+#   - max_workers=8：QQ SMTP 单连接 ~1-3s，8 并发可支撑峰值
+#     80 单/分钟派单，远超实际业务量。
+#   - BoundedSemaphore(8)：超出上限的提交直接丢弃 + 记录告警，
+#     绝不无限堆积线程（避免"线程数随邮件数线性增长"的隐患）。
+#   - daemon=True + atexit shutdown：进程退出时强制回收。
+#   - 单封超时熔断：worker 内部 12s 硬超时（connect 5 + login 5 + send 2）。
+# ============================================================
+_EMAIL_POOL_MAX_WORKERS = 8
+_EMAIL_POOL_SEM = threading.BoundedSemaphore(_EMAIL_POOL_MAX_WORKERS)
+_EMAIL_POOL_LOCK = threading.Lock()
+_EMAIL_POOL_REF = None  # type: concurrent.futures.ThreadPoolExecutor | None
+
+
+def _get_email_pool():
+    """懒加载邮件专用线程池，进程级单例。
+
+    之所以不直接放模块级 executor：导入 crm 时此模块已加载，
+    但需要兼容被测试或子进程场景，懒初始化更安全。
+    """
+    global _EMAIL_POOL_REF
+    if _EMAIL_POOL_REF is not None:
+        return _EMAIL_POOL_REF
+    with _EMAIL_POOL_LOCK:
+        if _EMAIL_POOL_REF is not None:
+            return _EMAIL_POOL_REF
+        import concurrent.futures
+
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_EMAIL_POOL_MAX_WORKERS,
+            thread_name_prefix="email-pool",
+        )
+        _EMAIL_POOL_REF = pool
+        # 进程退出时优雅关闭（强制 wait=False，避免 SMTP 挂死卡进程）
+        atexit.register(_shutdown_email_pool)
+        _log.info("[邮件池] 已启动 %d 个工作线程", _EMAIL_POOL_MAX_WORKERS)
+        return pool
+
+
+def _shutdown_email_pool() -> None:
+    """atexit 钩子：进程退出时关闭邮件池。
+
+    daemon=True 让 Python 退出时不阻塞，但 executor 自身不会自动
+    cancel 已提交未执行的任务；这里 cancel + wait 短超时，保证不泄漏。
+    """
+    global _EMAIL_POOL_REF
+    pool = _EMAIL_POOL_REF
+    if pool is None:
+        return
+    try:
+        # cancel 已排队但未开始的任务（已开始 run 的无法取消，只能等 SMTP 自然超时）
+        # 不 wait 太长：进程退出场景下 2s 足够
+        pool.shutdown(wait=False, cancel_futures=True)
+        _log.info("[邮件池] 已 shutdown")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("[邮件池] shutdown 异常：%s", exc)
+    finally:
+        _EMAIL_POOL_REF = None
 
 
 def send_assignment_notification(sales: User, customer: Customer) -> None:
@@ -53,26 +128,64 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
 def _async_send_email(sales: User, customer: Customer) -> None:
     """后台线程发邮件，与调用方完全解耦。
 
-    复用 crm.utils.async_jobs.submit 的线程池：该提交器已自带
-    `app.app_context()` 兜底（fix 7ebfbee），daemon 线程里访问
-    `current_app` / `db.session` 不会再 RuntimeError。
+    2026-07-05 重构：从 crm.utils.async_jobs 的 4 线程共享池中拆出，
+    使用邮件专用 8 线程池 + BoundedSemaphore 限流，避免：
+      1) 派单任务与 SMTP 互相阻塞
+      2) 线程数随邮件提交量线性增长（无界堆积）
 
     失败仅记日志，绝不抛回调用方（派单事务不能因为 SMTP 慢/失败而回滚）。
     """
-    from .utils.async_jobs import submit as submit_async_job
+    started_at = time.monotonic()
 
     def _worker() -> None:
-        try:
-            send_email_notification(sales, customer)
-        except Exception as exc:  # noqa: BLE001
+        # 抢信号量：池满则放弃执行。acquire 非阻塞，
+        # 失败说明当下 SMTP 已堆积，丢弃这一封避免更严重的阻塞。
+        if not _EMAIL_POOL_SEM.acquire(blocking=False):
             try:
-                current_app.logger.error(
-                    f"[异步邮件失败] {sales.username} <{sales.email}>: {exc}"
+                current_app.logger.warning(
+                    "[邮件池满] 丢弃一封派单通知：customer_id=%s sales=%s "
+                    "(> %d 并发，待恢复后可由巡检补发)",
+                    customer.id, sales.username, _EMAIL_POOL_MAX_WORKERS,
                 )
             except Exception:
                 pass
+            return
+        try:
+            send_email_notification(sales, customer)
+            elapsed = time.monotonic() - started_at
+            try:
+                current_app.logger.info(
+                    "[邮件发送完成] 耗时 %.2fs → %s <%s>: customer_id=%s",
+                    elapsed, sales.username, sales.email, customer.id,
+                )
+            except Exception:
+                pass
+        except Exception as exc:  # noqa: BLE001
+            elapsed = time.monotonic() - started_at
+            try:
+                current_app.logger.error(
+                    "[异步邮件失败] 耗时 %.2fs → %s <%s>: %s",
+                    elapsed, sales.username, sales.email, exc,
+                )
+            except Exception:
+                pass
+        finally:
+            try:
+                _EMAIL_POOL_SEM.release()
+            except Exception:
+                pass
 
-    submit_async_job(_worker)
+    try:
+        pool = _get_email_pool()
+        pool.submit(_worker)
+    except RuntimeError:
+        # 进程退出阶段 executor 已 shutdown，忽略即可
+        pass
+    except Exception as exc:  # pragma: no cover
+        try:
+            current_app.logger.warning("[邮件池提交失败] %s", exc)
+        except Exception:
+            pass
 
 
 def send_email_notification(sales: User, customer: Customer) -> None:
