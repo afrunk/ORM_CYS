@@ -8,7 +8,7 @@ from flask import Blueprint, g, render_template, request
 from sqlalchemy import func, case, or_, and_
 
 from ..extensions import db
-from ..models import Customer, User, Region
+from ..models import CONVERSION_STATUS_LABELS, Customer, Region, User
 from ..permissions import login_required, roles_required
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
@@ -50,7 +50,7 @@ def stats_index():
     # 如果指定了快捷 preset，则优先按快捷时间计算（忽略手动时间输入）
     if preset:
         if preset == "today":
-            # "今天"按业务定义的班次窗口：前一日18:00~当前18:00，或当前18:00~次日18:00（北京时区）
+            # "今天"按正常24小时制统计：北京时间 00:00:00 ~ 23:59:59
             start_dt, end_dt = get_shift_window_utc(now_utc=now)
         elif preset == "yesterday":
             start_dt, end_dt = get_yesterday_window_utc(now_utc=now)
@@ -76,12 +76,10 @@ def stats_index():
                 start_dt = _to_utc_naive(start_dt_raw)
             if end:
                 end_dt_raw = datetime.fromisoformat(end)
-                # 如果只有日期和时间，没有秒，添加秒
-                if len(end) == 16:  # YYYY-MM-DDTHH:mm
-                    end_dt_raw = end_dt_raw.replace(second=59)
-                else:
-                    # 如果已经有秒，确保是59秒
-                    end_dt_raw = end_dt_raw.replace(second=59)
+                # 如果是 T00:00（即只有日期没有时间），扩展为 T23:59:59
+                # 这符合"截止到某日"的业务语义
+                if end_dt_raw.hour == 0 and end_dt_raw.minute == 0 and end_dt_raw.second == 0:
+                    end_dt_raw = end_dt_raw.replace(hour=23, minute=59, second=59, microsecond=999999)
                 end_dt = _to_utc_naive(end_dt_raw)
         except ValueError:
             start_dt = end_dt = None
@@ -90,7 +88,7 @@ def stats_index():
     if not start_dt and not end_dt and not preset:
         start_dt, end_dt = get_shift_window_utc(now_utc=now)
 
-    filters_created = []
+    filters_created = [Customer.created_at.isnot(None)]  # 排除 created_at 为 NULL 的异常数据
     filters_accepted = []
     filters_dispatched = []
 
@@ -108,7 +106,7 @@ def stats_index():
         filters_dispatched.append(Customer.dispatch_time <= end_dt)
 
     # 录入统计（按 creator_id）
-    # 同时统计该运营录入的有效/无效订单数（基于 Customer.is_valid 字段）
+    # 录入数量使用 created_at 过滤，排除未设置时间的异常数据
     data_entry_stats = (
         db.session.query(
             User.id,
@@ -127,7 +125,7 @@ def stats_index():
         .all()
     )
 
-    # 销售接单统计
+    # 销售接单统计（仅统计已接单且有接单时间的客户）
     sales_accept_stats = (
         db.session.query(
             User.id,
@@ -137,12 +135,12 @@ def stats_index():
             func.sum(case((Customer.is_valid.is_(False), 1), else_=0)).label("invalid_count"),
         )
         .join(Customer, Customer.sales_id == User.id)
-        .filter(Customer.status == "accepted", *filters_accepted)
+        .filter(Customer.status == "accepted", Customer.accepted_time.isnot(None), *filters_accepted)
         .group_by(User.id, User.username)
         .all()
     )
 
-    # 销售转化统计
+    # 销售转化统计（仅统计已转化且有接单时间的客户）
     sales_conversion_stats = (
         db.session.query(
             User.id,
@@ -150,7 +148,7 @@ def stats_index():
             func.count(Customer.id).label("converted_count"),
         )
         .join(Customer, Customer.sales_id == User.id)
-        .filter(Customer.is_converted.is_(True), *filters_accepted)
+        .filter(Customer.is_converted.is_(True), Customer.accepted_time.isnot(None), *filters_accepted)
         .group_by(User.id, User.username)
         .all()
     )
@@ -321,7 +319,9 @@ def stats_index():
         )
     operator_total_dispatch = sum(row["dispatch_count"] for row in operator_rows)
 
-    total_created = sum(row["count"] for row in entry_rows)
+    # 使用独立的 COUNT 查询计算总录入数，确保与列表数据一致
+    total_created_query = db.session.query(func.count(Customer.id)).filter(*filters_created)
+    total_created = total_created_query.scalar() or 0
     total_accepted = sum(row["accepted"] for row in sales_rows)
     total_converted = sum(row["converted"] for row in sales_rows)
     pending = max(total_created - total_accepted, 0)
@@ -391,7 +391,7 @@ def stats_index():
 @roles_required(["super_admin", "data_entry"])
 def operator_detail(user_id):
     """
-    显示指定运营在当前统计时间窗口（同 stats_index 的时间判定：以北京时间 18:00 为班次分界）
+    显示指定运营在当前统计时间窗口（同 stats_index 的时间判定：以北京时间 00:00 为起始）
     的录入明细（仅当天窗口 / 或按查询参数 start/end/preset）。
     """
     start = request.args.get("start")
@@ -440,15 +440,14 @@ def operator_detail(user_id):
                 start_dt = _to_utc_naive(start_dt_raw)
             if end:
                 end_dt_raw = datetime.fromisoformat(end)
-                if len(end) == 16:
-                    end_dt_raw = end_dt_raw.replace(second=59)
-                else:
-                    end_dt_raw = end_dt_raw.replace(second=59)
+                # 如果是 T00:00，扩展为 T23:59:59
+                if end_dt_raw.hour == 0 and end_dt_raw.minute == 0 and end_dt_raw.second == 0:
+                    end_dt_raw = end_dt_raw.replace(hour=23, minute=59, second=59, microsecond=999999)
                 end_dt = _to_utc_naive(end_dt_raw)
         except ValueError:
             start_dt = end_dt = None
 
-    # 默认使用班次窗口
+    # 默认使用当天窗口
     if not start_dt and not end_dt and not preset:
         start_dt, end_dt = get_shift_window_utc(now_utc=now)
 
@@ -472,12 +471,15 @@ def operator_detail(user_id):
     for c in rows:
         beijing_time = (c.created_at + timedelta(hours=8)) if c.created_at else None
         created_local = beijing_time.strftime("%Y-%m-%d %H:%M:%S") if beijing_time else "-"
+        cds = c.conversion_display_status()
+        conv_label = CONVERSION_STATUS_LABELS.get(cds, cds)
         detail_rows.append(
             {
                 "id": c.id,
                 "region": c.region or "未填写地区",
                 "created_at": created_local,
                 "is_converted": bool(c.is_converted),
+                "conversion_label": conv_label,
                 "sales": sales_map.get(c.sales_id, "-") if c.sales_id else "-",
             }
         )

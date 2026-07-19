@@ -15,6 +15,22 @@
 
 {% block body %}
 <div class="page-content">
+  {# 与后端 show_sales_follow_up 一致；超管与侧栏同条件 role=='super_admin' 兜底（避免仅后端布尔为 False 时整块不渲染） #}
+  {% set _super_by_role = current_user is not none and current_user.role == 'super_admin' %}
+  {% if show_sales_follow_up is defined %}
+    {% set _show_follow = show_sales_follow_up or _super_by_role %}
+  {% else %}
+    {% set _show_follow = (
+      current_user.role == 'sales'
+      and customer.sales_id == current_user.id
+      and customer.status == 'accepted'
+    ) or _super_by_role or (current_user.is_super_admin() if current_user else false) %}
+  {% endif %}
+  {% if is_super_admin_user is defined %}
+    {% set _is_su = is_super_admin_user or _super_by_role %}
+  {% else %}
+    {% set _is_su = _super_by_role or (current_user.is_super_admin() if current_user else false) %}
+  {% endif %}
 
   <div class="form-card">
     <h5 style="margin-bottom: 1.5rem; font-weight: 600;">基本信息</h5>
@@ -93,21 +109,45 @@
         <div class="form-group">
           <label>客户图片</label>
           <div class="image-preview-container">
-            {% set full_image_url = url_for('static', filename='uploads/' + customer.image_path) %}
-            {% set preview_image_url = url_for('static', filename=image_preview_path) if image_preview_path else full_image_url %}
-            <img
-              src="{{ preview_image_url }}"
-              alt="客户图片"
-              class="previewable-image"
-              data-image-url="{{ preview_image_url }}"
-              style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
-              loading="lazy"
-              decoding="async"
-            >
+            {# 2026-07-04 用户反馈：缩略图后台预生成，详情页优先用 thumb；
+               thumb + preview 都没有时，不要强行拉 5MB 原图，
+               显示占位并标"图片待处理"。 #}
+            {% set thumb_rel = image_thumb_map.get(customer.id) if image_thumb_map else None %}
+            {% set preview_rel = image_preview_map.get(customer.id) if image_preview_map else None %}
+            {% if thumb_rel or preview_rel %}
+            {% set thumb_url = url_for('static', filename=thumb_rel) if thumb_rel else url_for('static', filename=preview_rel) %}
+            {% set preview_url = url_for('static', filename=preview_rel) if preview_rel else thumb_url %}
+            <picture>
+              {% if preview_rel %}
+              <source srcset="{{ preview_url }}" type="image/webp">
+              {% endif %}
+              <img
+                src="{{ thumb_url }}"
+                alt="客户图片"
+                class="previewable-image"
+                data-image-url="{{ preview_url }}"
+                style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+            {% else %}
+            {# 没有 thumb + preview：显示占位，不去拉原图 #}
+            <div style="display:flex;align-items:center;justify-content:center;
+                        width:320px;height:240px;background:#f3f4f6;
+                        border:1px solid #e5e7eb;border-radius:8px;color:#6b7280;">
+              <div style="text-align:center;">
+                <i class="bi bi-image" style="font-size:48px;color:#9ca3af;display:block;"></i>
+                <div style="margin-top:8px;font-size:14px;">图片待处理</div>
+                {% if customer.image_path %}
+                <small style="display:block;margin-top:4px;color:#9ca3af;">{{ customer.image_path }}</small>
+                {% endif %}
+              </div>
+            </div>
+            {% endif %}
           </div>
-          <small style="display: inline-block; margin-top: 0.25rem;">
-            <a href="{{ full_image_url }}" target="_blank" rel="noopener">查看原图</a>
-          </small>
+          {# 2026-07-04：去掉"查看原图"链接 —— 详情页 1080p preview 已足够清晰，
+             不再提供去拉 5MB 原始图的入口 #}
         </div>
       </div>
       {% endif %}
@@ -116,26 +156,104 @@
         <div class="form-group">
           <label>无效佐证截图</label>
           <div class="image-preview-container">
-            {% set invalid_full_url = url_for('static', filename='uploads/' + customer.invalid_proof_image) %}
-            {% set invalid_preview_url = url_for('static', filename=invalid_preview_path) if invalid_preview_path else invalid_full_url %}
+            {% set thumb_rel = invalid_thumb_map.get(customer.id) if invalid_thumb_map else None %}
+            {% if thumb_rel %}
+            {% set thumb_url = url_for('static', filename=thumb_rel) %}
             <img
-              src="{{ invalid_preview_url }}"
+              src="{{ thumb_url }}"
               alt="无效佐证截图"
               class="previewable-image"
-              data-image-url="{{ invalid_preview_url }}"
+              {# 2026-07-04：详情页加载时只显示缩略图；点击放大也只显示缩略图，
+                 不再提供去拉 5MB 原始图的入口 #}
+              data-image-url="{{ thumb_url }}"
               style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
               loading="lazy"
               decoding="async"
             >
+            {% else %}
+            <div style="display:flex;align-items:center;justify-content:center;
+                        width:320px;height:200px;background:#f3f4f6;
+                        border:1px solid #e5e7eb;border-radius:8px;color:#6b7280;">
+              <div style="text-align:center;">
+                <i class="bi bi-image" style="font-size:32px;color:#9ca3af;display:block;"></i>
+                <div style="margin-top:6px;font-size:13px;">佐证图缩略图待生成</div>
+              </div>
+            </div>
+            {% endif %}
           </div>
-          <small style="display: inline-block; margin-top: 0.25rem;">
-            <a href="{{ invalid_full_url }}" target="_blank" rel="noopener">查看原图</a>
-          </small>
+          {# 2026-07-04：去掉"查看原图"链接 #}
         </div>
       </div>
       {% endif %}
     </div>
   </div>
+
+  {# 销售跟进放在备注上方：备注往往很长，超管不用滚到底才能看到 #}
+  {% if _show_follow %}
+  <!-- crm:sales-follow-up -->
+  <div class="form-card" id="sales-follow-up-section">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
+      <div>
+        <h5 style="margin-bottom: 0.25rem; font-weight: 600;">销售跟进</h5>
+        {% if _is_su %}
+        <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">超级管理员可修改任意客户的「是否有效」「是否转化」、备注及无效佐证截图，不受接单状态限制。</p>
+        {% else %}
+        <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">更新有效性、转化和跟进记录，按钮统一放在底部方便操作。</p>
+        {% endif %}
+      </div>
+    </div>
+    <form method="post" enctype="multipart/form-data">
+      <div class="row gy-4">
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>是否有效</label>
+            <select name="is_valid" class="form-control">
+            <option value="">未填写</option>
+              <option value="true" {% if customer.is_valid is true %}selected{% endif %}>有效</option>
+              <option value="false" {% if customer.is_valid is false and customer.effective_conversion_status() != 'urge_add' %}selected{% endif %}>无效</option>
+              <option value="urge_add" {% if customer.effective_conversion_status() == 'urge_add' %}selected{% endif %}>未通过，催加</option>
+            </select>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>是否转化</label>
+            <select name="is_converted" class="form-control">
+              <option value="true" {% if customer.conversion_display_status() == 'converted' %}selected{% endif %}>已转化</option>
+              <option value="false" {% if customer.conversion_display_status() == 'not_converted' %}selected{% endif %}>未转化</option>
+            </select>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-group">
+            <label>新增备注</label>
+          <textarea
+            name="remark"
+            rows="3"
+            class="form-control"
+              placeholder="输入新的跟进备注，将自动附带时间戳并追加到历史记录顶部。"
+            ></textarea>
+          </div>
+        </div>
+        {% if customer.is_valid is false or customer.invalid_proof_image or _is_su %}
+        <div class="col-12">
+          <div class="form-group">
+            <label>无效佐证截图</label>
+            <input type="file" name="invalid_proof_image" class="form-control" accept="image/*">
+            {# 2026-07-04：去掉"查看图片"链接 —— 不让用户从 UI 入口去拉 5MB 原始图。
+               已上传的图在上面会显示缩略图，需要更高清可以 hover/点击图片本身放大 #}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+        <button type="submit" class="btn-action primary" style="min-width: 180px;">
+          <i class="bi-save"></i> 保存跟进信息
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
 
   <div class="form-card">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
@@ -158,82 +276,6 @@
     </div>
     {% endif %}
   </div>
-
-  {% if current_user.role == 'sales' and customer.sales_id == current_user.id and customer.status == 'accepted' %}
-  <div class="form-card">
-    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
-      <div>
-        <h5 style="margin-bottom: 0.25rem; font-weight: 600;">销售跟进</h5>
-        <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">更新有效性、转化和跟进记录，按钮统一放在底部方便操作。</p>
-      </div>
-    </div>
-    <form method="post" enctype="multipart/form-data">
-      <div class="row gy-4">
-        <div class="col-md-6">
-          <div class="form-group">
-            <label>是否有效</label>
-            <select name="is_valid" class="form-control">
-            <option value="">未填写</option>
-              <option value="true" {% if customer.is_valid is true %}selected{% endif %}>有效</option>
-              <option value="false" {% if customer.is_valid is false %}selected{% endif %}>无效</option>
-          </select>
-          </div>
-        </div>
-        <div class="col-md-6">
-          <div class="form-group">
-            <label>是否转化</label>
-            <select name="is_converted" class="form-control">
-            <option value="">未填写</option>
-              <option value="true" {% if customer.is_converted is true %}selected{% endif %}>已转化</option>
-              <option value="false" {% if customer.is_converted is false %}selected{% endif %}>未转化</option>
-          </select>
-          </div>
-        </div>
-        <div class="col-12">
-          <div class="form-group">
-            <label>新增备注</label>
-          <textarea
-            name="remark"
-            rows="3"
-            class="form-control"
-              placeholder="输入新的跟进备注，将自动附带时间戳并追加到历史记录顶部。"
-            ></textarea>
-          </div>
-          {% if customer.remark %}
-          <div style="margin-top: 1rem;">
-            <div style="font-weight: 600; margin-bottom: 0.5rem;">历史备注</div>
-            <div style="max-height: 200px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.75rem; background: #f9fafb;">
-              {% for line in customer.remark.splitlines() %}
-              <div style="font-size: 0.9rem; color: #374151; line-height: 1.6; {% if not loop.last %}margin-bottom: 0.35rem;{% endif %}">
-                {{ line }}
-              </div>
-              {% endfor %}
-            </div>
-          </div>
-          {% endif %}
-        </div>
-        {% if customer.is_valid is false or customer.invalid_proof_image %}
-        <div class="col-12">
-          <div class="form-group">
-            <label>无效佐证截图</label>
-            <input type="file" name="invalid_proof_image" class="form-control" accept="image/*">
-            {% if customer.invalid_proof_image %}
-            <small style="color: #6b7280; margin-top: 0.5rem; display: block;">
-              当前：<a href="{{ url_for('static', filename='uploads/' + customer.invalid_proof_image) }}" target="_blank">查看图片</a>
-            </small>
-            {% endif %}
-          </div>
-        </div>
-        {% endif %}
-      </div>
-      <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
-        <button type="submit" class="btn-action primary" style="min-width: 180px;">
-          <i class="bi-save"></i> 保存跟进信息
-        </button>
-      </div>
-    </form>
-  </div>
-  {% endif %}
   </div>
 <script>
 document.addEventListener('DOMContentLoaded', function() {

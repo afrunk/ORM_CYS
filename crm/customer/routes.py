@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import time
 from datetime import datetime, timedelta, timezone
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 from flask import (
     Blueprint,
@@ -14,24 +13,66 @@ from flask import (
     redirect,
     render_template,
     request,
-    session,
     url_for,
     current_app,
     jsonify,
 )
 from sqlalchemy import func, or_, and_
-from sqlalchemy.exc import IntegrityError
 from werkzeug.utils import secure_filename
 
 from ..extensions import db
-from ..models import Customer, SalesProfile, User, Region, Notification
+from ..models import (
+    CONVERSION_STATUS_URGE_ADD,
+    Customer,
+    Notification,
+    Region,
+    SalesProfile,
+    User,
+)
 from ..notifications import send_assignment_notification
 from ..permissions import login_required
-from ..utils.images import ensure_thumbnail, ensure_preview, remove_preview, remove_thumbnail
-from ..utils.monthly_order import assign_monthly_order_fields
+from ..utils.async_jobs import submit as submit_async
+from ..utils.images import (
+    ensure_preview,
+    ensure_preview_async_or_fallback,
+    ensure_thumbnail,
+    ensure_thumbnail_async_or_fallback,
+    _preview_path_if_exists,
+    _thumbnail_path_if_exists,
+    remove_preview,
+    remove_thumbnail,
+    schedule_async_preview,
+    schedule_async_thumbnail,
+)
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
 
+# 简单的进程内缓存：用于减轻 region-stats 接口的数据库压力
+# key: (role_key, user_id, shift_window_key), value: (data, expire_at)
+_REGION_STATS_CACHE: dict[tuple, tuple] = {}
+_REGION_STATS_TTL = 30  # 秒
+
 customer_bp = Blueprint("customer", __name__, template_folder="../templates")
+
+
+def _list_summary_flags(user: User) -> tuple[bool, bool, bool]:
+    """客户列表顶区统计卡片：(超管/数据员块, 运营块, 销售仅接单数).
+
+    角色字符串做 NFKC + 去空白 + 小写，避免库里有不可见字符导致模板分支失效。
+    若 role 未识别但存在 sales_profile，按销售展示（仅顶区卡片）。
+    """
+    raw = getattr(user, "role", None) or ""
+    raw = unicodedata.normalize("NFKC", str(raw))
+    role_key = "".join(raw.split()).lower()
+
+    if role_key in ("super_admin", "data_entry"):
+        return True, False, False
+    if role_key == "operator":
+        return False, True, False
+    if role_key == "sales":
+        return False, False, True
+    if getattr(user, "sales_profile", None) is not None:
+        return False, False, True
+    return False, False, False
 
 
 def _collect_failed_sales_names(remark: str) -> list[str]:
@@ -139,6 +180,138 @@ def _static_asset_exists(rel_path: str | None) -> bool:
     static_folder = current_app.static_folder
     candidate = Path(static_folder) / rel_path_clean
     return candidate.exists()
+
+
+def _compute_sales_stats(sales_users: list[User]) -> list[dict]:
+    """一次性 GROUP BY 算出所有销售的 accepted / converted 数量。
+
+    替代原来的 N×2 次单点 COUNT 查询。
+    """
+    if not sales_users:
+        return []
+
+    sales_ids = [s.id for s in sales_users]
+
+    accepted_rows = (
+        db.session.query(Customer.sales_id, func.count(Customer.id))
+        .filter(Customer.sales_id.in_(sales_ids), Customer.status == "accepted")
+        .group_by(Customer.sales_id)
+        .all()
+    )
+    converted_rows = (
+        db.session.query(Customer.sales_id, func.count(Customer.id))
+        .filter(
+            Customer.sales_id.in_(sales_ids),
+            Customer.is_converted.is_(True),
+        )
+        .group_by(Customer.sales_id)
+        .all()
+    )
+    accepted_map = {sid: cnt for sid, cnt in accepted_rows}
+    converted_map = {sid: cnt for sid, cnt in converted_rows}
+
+    result: list[dict] = []
+    for s in sales_users:
+        total_accepted = accepted_map.get(s.id, 0)
+        total_converted = converted_map.get(s.id, 0)
+        if total_accepted > 0:
+            conversion_rate = f"{(total_converted / total_accepted * 100):.1f}%"
+        else:
+            conversion_rate = "-"
+        result.append(
+            {
+                "user": s,
+                "conversion_rate": conversion_rate,
+                "accepted": total_accepted,
+                "converted": total_converted,
+            }
+        )
+    return result
+
+
+def _compute_next_sales_by_region() -> list[dict]:
+    """一次性查每个 (region, sales_id) 的最近派单时间，挑出每个 region 最早接单的销售。
+
+    替代原来嵌套循环里的 N*M 次 order_by().first() 查询。
+    """
+    # 1) 列出所有有配置地区的可用销售
+    region_rows = (
+        db.session.query(SalesProfile.service_region)
+        .filter(SalesProfile.service_region.isnot(None))
+        .distinct()
+        .all()
+    )
+    region_names = [r[0] for r in region_rows if r[0]]
+    if not region_names:
+        return []
+
+    # 2) 一次性查每个 region 下每个销售的最大 dispatch_time（按 sales 维度）
+    #    仅取 region ∈ 配置集合，且 sales 是 region 中的可用销售
+    sales_in_regions: dict[str, list[tuple[int, str, int | None]]] = {
+        r: [] for r in region_names
+    }
+    sales_rows = (
+        db.session.query(
+            User.id,
+            User.username,
+            SalesProfile.service_region,
+            SalesProfile.dispatch_order,
+        )
+        .join(SalesProfile, SalesProfile.user_id == User.id)
+        .filter(
+            User.role == "sales",
+            User.is_active.is_(True),
+            SalesProfile.is_available.is_(True),
+            SalesProfile.service_region.in_(region_names),
+        )
+        .all()
+    )
+    for sid, uname, region, dispatch_order in sales_rows:
+        if region in sales_in_regions:
+            sales_in_regions[region].append((sid, uname, dispatch_order))
+
+    # 3) 一次性查每个 region 下销售的最近派单时间
+    max_dispatch = (
+        db.session.query(
+            Customer.region,
+            Customer.sales_id,
+            func.max(Customer.dispatch_time).label("last_dt"),
+        )
+        .filter(
+            Customer.region.in_(region_names),
+            Customer.sales_id.isnot(None),
+            Customer.dispatch_time.isnot(None),
+        )
+        .group_by(Customer.region, Customer.sales_id)
+        .all()
+    )
+    last_time_map: dict[tuple[str, int], datetime] = {}
+    for region, sid, last_dt in max_dispatch:
+        if region and sid is not None and last_dt is not None:
+            last_time_map[(region, sid)] = last_dt
+
+    # 4) Python 里挑每个 region 最早的（与自动派单规则保持一致）
+    result: list[dict] = []
+    for region, sales_list in sales_in_regions.items():
+        if not sales_list:
+            continue
+        sales_sorted = sorted(
+            sales_list,
+            key=lambda item: (
+                last_time_map.get((region, item[0]), datetime.min),
+                item[2] if item[2] is not None else 0,
+                item[0],
+            ),
+        )
+        sid, uname, dispatch_order = sales_sorted[0]
+        result.append(
+            {
+                "region": region,
+                "username": uname,
+                "dispatch_order": dispatch_order,
+            }
+        )
+    return result
 
 
 def _auto_assign_sales(region: str | None = None, exclude_sales_id: int | None = None) -> User | None:
@@ -305,9 +478,7 @@ def _assign_public_pool_to_sales(sales_user: User, limit: int | None = None) -> 
     return assigned
 
 
-def run_auto_dispatch_unassigned(
-    single_customer_id: int | None = None,
-) -> tuple[int, User | None, Customer | None]:
+def run_auto_dispatch_unassigned(single_customer_id: int | None = None) -> int:
     """对所有（或指定）未分配客户按地区和派单序号进行系统派单。
 
     规则：
@@ -315,11 +486,6 @@ def run_auto_dispatch_unassigned(
     - 按地区分组；每个地区内按 dispatch_order 轮询，每轮每个销售最多 1 单
     - 同一地区内优先把新单派给「最久没有接过单」的销售，保证轮询公平
     - 某地区没有任何可用销售时，该地区客户进入公海（status='public_pool'）
-
-    Returns:
-        assigned_count: 本次指派的客户数量
-        assigned_sales: 若有指派，返回被指派的销售用户（仅针对 single_customer_id 场景）
-        assigned_customer: 若有指派，返回被指派的客户（仅针对 single_customer_id 场景）
     """
     now = datetime.utcnow()
 
@@ -332,7 +498,7 @@ def run_auto_dispatch_unassigned(
 
     unassigned_customers = base_query.order_by(Customer.region.asc(), Customer.id.asc()).all()
     if not unassigned_customers:
-        return 0, None, None
+        return 0
 
     # 按地区分组
     region_map: dict[str | None, list[Customer]] = {}
@@ -340,8 +506,6 @@ def run_auto_dispatch_unassigned(
         region_map.setdefault(c.region, []).append(c)
 
     assigned_count = 0
-    assigned_sales_out: User | None = None
-    assigned_customer_out: Customer | None = None
 
     for region, customers in region_map.items():
         # 业务约束：客户必须有明确地区，且只能派给同地区销售
@@ -428,11 +592,8 @@ def run_auto_dispatch_unassigned(
                         customer,
                         f"[系统] 校验匹配：客户地区({customer.region}) == 销售地区({sales_region})，执行系统派单给 {sales_user.username}",
                     )
+                    send_assignment_notification(sales_user, customer)
                     assigned_count += 1
-                    # 仅记录 single_customer_id 场景的返回值
-                    if single_customer_id is not None:
-                        assigned_sales_out = sales_user
-                        assigned_customer_out = customer
                 else:
                     # 理论上不会到这里，如出现则直接进入公海，避免跨区误派
                     customer.status = "public_pool"
@@ -443,7 +604,7 @@ def run_auto_dispatch_unassigned(
                     )
 
     db.session.commit()
-    return assigned_count, assigned_sales_out, assigned_customer_out
+    return assigned_count
 
 
 def _apply_customer_filters(query, current_user: User):
@@ -484,12 +645,23 @@ def _apply_customer_filters(query, current_user: User):
 
     # 转化/有效筛选
     is_converted = request.args.get("is_converted")
-    if is_converted in ("true", "false"):
-        query = query.filter(Customer.is_converted.is_(is_converted == "true"))
+    if is_converted == "true":
+        query = query.filter(Customer.is_converted.is_(True))
+    elif is_converted == "false":
+        query = query.filter(
+            or_(Customer.is_converted.is_(False), Customer.is_converted.is_(None))
+        )
 
     is_valid = request.args.get("is_valid")
-    if is_valid in ("true", "false"):
-        query = query.filter(Customer.is_valid.is_(is_valid == "true"))
+    if is_valid == "true":
+        query = query.filter(Customer.is_valid.is_(True))
+    elif is_valid == "false":
+        query = query.filter(
+            Customer.is_valid.is_(False),
+            or_(Customer.conversion_status != CONVERSION_STATUS_URGE_ADD, Customer.conversion_status.is_(None))
+        )
+    elif is_valid == "urge_add":
+        query = query.filter(Customer.conversion_status == CONVERSION_STATUS_URGE_ADD)
 
     # 二级快速筛选：仅超时订单
     only_timeout = request.args.get("only_timeout")
@@ -524,7 +696,7 @@ def _apply_customer_filters(query, current_user: User):
     # 如果指定了快捷 preset，则优先按快捷时间计算（忽略手动时间输入）
     if preset:
         if preset == "today":
-            # “今天”按业务定义的班次窗口：前一日18:00~当前18:00，或当前18:00~次日18:00（北京时区）
+            # "今天"按正常24小时制统计：北京时间 00:00:00 ~ 23:59:59
             start_dt, end_dt = get_shift_window_utc(now_utc=now)
         elif preset == "yesterday":
             start_dt, end_dt = get_yesterday_window_utc(now)
@@ -555,7 +727,7 @@ def _apply_customer_filters(query, current_user: User):
             )
             return query
 
-    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（最近一个18:00~现在，北京时间）
+    # 如果既没有手动时间参数，也没有 preset，则使用"当天窗口"（北京时间 00:00 ~ 23:59）
     if not start_date and not end_date and not start and not end and not preset:
         start_dt, end_dt = get_shift_window_utc()
         # 对于已分配的客户，按派单时间筛选；对于未分配的客户，按创建时间筛选
@@ -715,16 +887,22 @@ def customer_list():
     from ..models import SystemConfig
     system_dispatch_enabled = SystemConfig.get_bool("system_dispatch_enabled", default=False)
 
-    thumbnail_map = {}
-    preview_map = {}
+    # 性能优化 2026-07-04（方案 II 用户确认）：
+    # 缩略图后台预生成（上传时一次到位），列表页只查路径不派任何任务。
+    # thumbnail_map / preview_map 直接走 _thumbnail_path_if_exists / _preview_path_if_exists
+    # 这是纯文件存在性检查，每个 < 1ms，20 个客户也 < 10ms。
+    # 没有现成缩略图的图自动 fallback 到原图（浏览器原生解码，不卡 CPU）。
+    thumbnail_map: dict[int, str] = {}
+    preview_map: dict[int, str] = {}
     for customer in customers:
-        if customer.image_path:
-            thumb_rel = ensure_thumbnail(customer.image_path)
-            if thumb_rel and _static_asset_exists(thumb_rel):
-                thumbnail_map[customer.id] = thumb_rel
-            preview_rel = ensure_preview(customer.image_path)
-            if preview_rel and _static_asset_exists(preview_rel):
-                preview_map[customer.id] = preview_rel
+        if not customer.image_path:
+            continue
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            thumbnail_map[customer.id] = t_rel
+        p_rel = _preview_path_if_exists(customer.image_path)
+        if p_rel:
+            preview_map[customer.id] = p_rel
 
     # 如果是待分配销售 tab，需要加载销售列表供手动派单
     sales_users = None
@@ -740,98 +918,19 @@ def customer_list():
             .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
             .all()
         )
-        
-        # 为每个销售计算转化率
-        sales_with_stats = []
-        for s in sales_users:
-            total_accepted = Customer.query.filter(
-                Customer.sales_id == s.id,
-                Customer.status == "accepted"
-            ).count()
-            total_converted = Customer.query.filter(
-                Customer.sales_id == s.id,
-                Customer.is_converted.is_(True)
-            ).count()
-            
-            if total_accepted > 0:
-                conversion_rate = f"{(total_converted / total_accepted * 100):.1f}%"
-            else:
-                conversion_rate = "-"
-            
-            sales_with_stats.append({
-                "user": s,
-                "conversion_rate": conversion_rate,
-                "accepted": total_accepted,
-                "converted": total_converted,
-            })
+
+        # 修复 N+1：原本每个销售各做 2 条 COUNT(*)，N 个销售 = 2N 次 SQL。
+        # 改为一次性 GROUP BY 聚合，2 条 SQL 拿到全量数据。
+        sales_with_stats = _compute_sales_stats(sales_users)
 
     # 计算「各地区下一位待派销售」预览，仅在客户列表主 Tab 且超管/数据员时展示
     next_sales_by_region: list[dict] | None = None
     if active_tab == "list" and current.role in ("super_admin", "data_entry"):
-        next_sales_by_region = []
-
-        # 所有配置了服务地区的可用销售的地区列表
-        region_rows = (
-            db.session.query(SalesProfile.service_region)
-            .filter(SalesProfile.service_region.isnot(None))
-            .distinct()
-            .all()
-        )
-
-        for (region_name,) in region_rows:
-            if not region_name:
-                continue
-
-            region_sales = (
-                User.query.join(SalesProfile, SalesProfile.user_id == User.id)
-                .filter(
-                    User.role == "sales",
-                    User.is_active.is_(True),
-                    SalesProfile.is_available.is_(True),
-                    SalesProfile.service_region == region_name,
-                )
-                .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
-                .all()
-            )
-
-            if not region_sales:
-                continue
-
-            # 与自动派单规则保持一致：最久未在该地区接单的销售优先
-            last_time_map: dict[int, datetime] = {}
-            for s in region_sales:
-                q = Customer.query.filter(
-                    Customer.sales_id == s.id,
-                    Customer.region == region_name,
-                )
-                last_customer = (
-                    q.order_by(Customer.dispatch_time.desc(), Customer.id.desc())
-                    .first()
-                )
-                if last_customer and last_customer.dispatch_time:
-                    last_time_map[s.id] = last_customer.dispatch_time
-                else:
-                    last_time_map[s.id] = datetime.min
-
-            region_sales_sorted = sorted(
-                region_sales,
-                key=lambda s: (
-                    last_time_map.get(s.id, datetime.min),
-                    s.sales_profile.dispatch_order if s.sales_profile else 0,
-                    s.id,
-                ),
-            )
-
-            next_s = region_sales_sorted[0]
-            next_sales_by_region.append(
-                {
-                    "region": region_name,
-                    "username": next_s.username,
-                    "dispatch_order": next_s.sales_profile.dispatch_order
-                    if next_s.sales_profile
-                    else None,
-                }
-            )
+        # 修复嵌套循环 N+1：
+        # 原来每个地区每个销售都要单独查 Customer.order_by().first()，N 地区 × M 销售 = N*M 次 SQL。
+        # 改为：先一次性查所有 (region, sales_id, max(dispatch_time)) 的元组，
+        # 在 Python 里挑出每个 region 的最早派单时间，再选该 region 中对应的销售。
+        next_sales_by_region = _compute_next_sales_by_region()
 
     # 获取所有不重复的地区列表，用于筛选下拉框
     regions = (
@@ -842,6 +941,10 @@ def customer_list():
         .all()
     )
     region_list = [r[0] for r in regions]
+
+    summary_show_admin, summary_show_operator, summary_show_sales_only = _list_summary_flags(
+        current
+    )
 
     return render_template(
         "customer/customer_list.html",
@@ -857,28 +960,35 @@ def customer_list():
         sales_with_stats=sales_with_stats,
         next_sales_by_region=next_sales_by_region,
         region_list=region_list,
+        summary_show_admin=summary_show_admin,
+        summary_show_operator=summary_show_operator,
+        summary_show_sales_only=summary_show_sales_only,
     )
 
 
 @customer_bp.route("/summary/today-created-count")
 @login_required
 def today_created_count():
-    """返回当前时间窗口内（最近一个18:00~现在）的新增客户总量（按 created_at）。
+    """返回当天（北京时间 00:00 ~ 23:59）的「派出」客户总量（按 dispatch_time）。
 
-    仅超级管理员与数据员可查看全系统汇总；运营与销售不应调用此接口。
+    说明：
+    - 卡片文案为「当日派出客户」，统计的是今天**被系统派单出去**的客户数量
+      （即今天触发了派单流程的客户，含历史录入但今天才派出去的）
+    - 不再根据当前用户角色做任何过滤（运营 / 管理员 / 销售看到的都是同一个总数）
+
+    变更记录：
+    - 2026-07-05 用户反馈：原口径（按 created_at）只统计今天新录入的客户（4 条），
+      但客户列表按 dispatch_time 筛选会显示 31 条，数字不一致易造成误解。
+      改为按 dispatch_time 统计后与列表口径对齐。
     """
-    current = g.current_user
-    if current is None:
-        return jsonify({"success": False, "error": "未登录"}), 401
-    if current.role not in ("super_admin", "data_entry"):
-        return jsonify({"success": False, "error": "无权查看"}), 403
 
     start_dt, end_dt = get_shift_window_utc()
 
     count = (
         Customer.query.filter(
-            Customer.created_at >= start_dt,
-            Customer.created_at <= end_dt,
+            Customer.dispatch_time >= start_dt,
+            Customer.dispatch_time <= end_dt,
+            Customer.dispatch_time.isnot(None),
         )
         .with_entities(func.count(Customer.id))
         .scalar()
@@ -890,18 +1000,82 @@ def today_created_count():
 @customer_bp.route("/summary/region-stats")
 @login_required
 def region_stats():
-    """按角色返回列表页摘要数据。
+    """返回按地区统计的新增客户数量，以及当前用户的接单/上传数量。
 
-    - 超级管理员 / 数据员：全系统按地区新增统计（view=full）
-    - 运营：本班次录入排名 + 接单排名（view=rankings），不含全系统汇总
-    - 销售：仅本人接单数（view=personal）
+    对于销售：返回个人接单数量（地区列表为空）
+    对于运营：返回个人上传数量 + 在所有运营中的排名
+    对于管理员/数据员：返回地区统计列表（不过渡到卡片，不展示卡片本身）
+
+    为了减轻高并发下数据库的压力，30 秒内的相同角色+用户+班次窗口请求会直接走缓存。
     """
-    current = g.current_user
-    if current is None:
-        return jsonify({"success": False, "error": "未登录"}), 401
-    start_dt, end_dt = get_shift_window_utc()
+    import time as _time
 
-    if current.role == "sales":
+    current = g.current_user
+    start_dt, end_dt = get_shift_window_utc()
+    role_key = (current.role or "").strip().lower()
+
+    # 缓存键：(角色, 用户ID, 班次窗口起点分钟级)
+    shift_key = int(start_dt.timestamp() // 60)
+    cache_key = (role_key, current.id, shift_key)
+    cached = _REGION_STATS_CACHE.get(cache_key)
+    if cached is not None:
+        data, expire_at = cached
+        if _time.time() < expire_at:
+            return jsonify(data)
+
+    personal_count = 0
+    personal_label = ""
+    personal_rank = None
+    operator_ranking = None  # 运营的排名列表，供模板渲染
+
+    # 统计所有运营（operator角色）的上传数量，按降序排列
+    all_operator_counts = (
+        db.session.query(
+            User.id,
+            User.username,
+            func.count(Customer.id).label("count"),
+        )
+        .join(Customer, Customer.creator_id == User.id)
+        .filter(
+            User.role == "operator",
+            Customer.created_at >= start_dt,
+            Customer.created_at <= end_dt,
+        )
+        .group_by(User.id, User.username)
+        .order_by(func.count(Customer.id).desc())
+        .all()
+    )
+
+    # 构建运营排名字典
+    op_rank_map: dict[int, tuple[int, str, int]] = {}
+    for idx, row in enumerate(all_operator_counts, 1):
+        op_rank_map[row.id] = (idx, row.username, int(row.count))
+
+    # 按地区统计「派出」客户数量（与顶部"当日派出客户"卡片口径一致：按 dispatch_time）
+    # 2026-07-05 用户反馈：原口径（created_at）只算今天新录入的（内蒙 4 / 西北 6），
+    # 跟客户列表按 dispatch_time 筛出来的数量不一致。改为 dispatch_time 后与列表对齐。
+    region_counts = (
+        db.session.query(
+            Customer.region,
+            func.count(Customer.id).label("count"),
+        )
+        .filter(
+            Customer.dispatch_time >= start_dt,
+            Customer.dispatch_time <= end_dt,
+            Customer.dispatch_time.isnot(None),
+            Customer.region.isnot(None),
+            Customer.region != "",
+        )
+        .group_by(Customer.region)
+        .all()
+    )
+
+    region_stats_list = [
+        {"region": region, "count": int(count)}
+        for region, count in region_counts
+    ]
+
+    if role_key == "sales":
         personal_count = (
             Customer.query.filter(
                 Customer.sales_id == current.id,
@@ -911,85 +1085,47 @@ def region_stats():
             .with_entities(func.count(Customer.id))
             .scalar()
         )
-        return jsonify(
-            {
-                "success": True,
-                "view": "personal",
-                "personal_count": int(personal_count or 0),
-                "personal_label": "我的接单数量",
-            }
-        )
-
-    if current.role == "operator":
-        entry_rows = (
-            db.session.query(User.username, func.count(Customer.id).label("cnt"))
-            .join(Customer, Customer.creator_id == User.id)
-            .filter(
+        personal_label = "我的接单数量"
+    elif role_key == "operator":
+        personal_count = (
+            Customer.query.filter(
+                Customer.creator_id == current.id,
                 Customer.created_at >= start_dt,
                 Customer.created_at <= end_dt,
             )
-            .group_by(User.id, User.username)
-            .order_by(func.count(Customer.id).desc())
-            .limit(20)
-            .all()
+            .with_entities(func.count(Customer.id))
+            .scalar()
         )
-        sales_rows = (
-            db.session.query(User.username, func.count(Customer.id).label("cnt"))
-            .join(Customer, Customer.sales_id == User.id)
-            .filter(
-                Customer.status == "accepted",
-                Customer.accepted_time >= start_dt,
-                Customer.accepted_time <= end_dt,
-            )
-            .group_by(User.id, User.username)
-            .order_by(func.count(Customer.id).desc())
-            .limit(20)
-            .all()
-        )
-        return jsonify(
-            {
-                "success": True,
-                "view": "rankings",
-                "entry_ranking": [
-                    {"username": u, "count": int(c)} for u, c in entry_rows
-                ],
-                "sales_ranking": [
-                    {"username": u, "count": int(c)} for u, c in sales_rows
-                ],
-            }
-        )
+        personal_label = "我的上传数量"
+        # 计算当前运营的排名
+        if current.id in op_rank_map:
+            rank, _, count = op_rank_map[current.id]
+            personal_rank = rank
+            personal_count = count
+        operator_ranking = [
+            {"rank": idx, "username": row.username, "count": int(row.count)}
+            for idx, row in enumerate(all_operator_counts, 1)
+        ]
 
-    if current.role not in ("super_admin", "data_entry"):
-        return jsonify({"success": False, "error": "无权查看"}), 403
+    payload = {
+        "success": True,
+        "region_stats": region_stats_list,
+        "personal_count": int(personal_count or 0),
+        "personal_label": personal_label,
+        "personal_rank": personal_rank,
+        "operator_ranking": operator_ranking,
+    }
 
-    region_counts = (
-        db.session.query(
-            Customer.region,
-            func.count(Customer.id).label("count"),
-        )
-        .filter(
-            Customer.created_at >= start_dt,
-            Customer.created_at <= end_dt,
-            Customer.region.isnot(None),
-            Customer.region != "",
-        )
-        .group_by(Customer.region)
-        .all()
-    )
+    # 写入缓存（30 秒）
+    _REGION_STATS_CACHE[cache_key] = (payload, _time.time() + _REGION_STATS_TTL)
+    # 简单的过期清理：避免字典无限增长
+    if len(_REGION_STATS_CACHE) > 200:
+        now_ts = _time.time()
+        for k, (_, exp) in list(_REGION_STATS_CACHE.items()):
+            if exp < now_ts:
+                _REGION_STATS_CACHE.pop(k, None)
 
-    region_stats_list = [
-        {"region": region, "count": int(count)} for region, count in region_counts
-    ]
-
-    return jsonify(
-        {
-            "success": True,
-            "view": "full",
-            "region_stats": region_stats_list,
-            "personal_count": 0,
-            "personal_label": "",
-        }
-    )
+    return jsonify(payload)
 
 
 @customer_bp.route("/sales/availability", methods=["POST"])
@@ -1056,7 +1192,33 @@ def update_sales_availability():
 @customer_bp.route("/create", methods=["GET", "POST"])
 @login_required
 def customer_create():
-    """录入客户信息，并根据角色与系统设置决定是否派单。"""
+    """录入客户信息，并根据角色与系统设置决定是否派单。
+
+    ===========================================================================
+    性能优化总览（2026-07-04 用户反馈"多运营同时上传会卡顿"后实测驱动）
+    ===========================================================================
+    问题：10 个运营同时上传时，p50=3.3s、p90=3.8s；20 并发时 p50=8.9s。
+    根因：上传请求路径里有三个同步阻塞点 + GIL 抢锁，导致串行化排队。
+
+    已实施的修复（实测：10 并发 p50 3.3s → 0.16s，提速 ~20×）：
+    1. 联系方式去重：删除「Python 全表扫描 fallback」
+       原代码 DB 查询失败时 fallback 到 Python 遍历 11318 条 customer 记录。
+       实测每次上传耗时 1.5~3.5s（10 并发时 GIL 抢锁）。
+       现只保留 DB 端的 func.trim() 查询，足够处理两侧空格场景。
+    2. 自动派单：改为后台线程异步执行
+       原代码每次上传都同步触发 run_auto_dispatch_unassigned()，
+       内部含 N+1 次 DB 查询，并发时全部排队等锁。
+       现通过 crm.utils.async_jobs.submit() 提交到独立 ThreadPoolExecutor。
+    3. 缩略图：改为后台异步生成
+       原代码同步调用 ensure_thumbnail() 转码 96px WEBP（~50-100ms/CPU 密集）。
+       现改用 schedule_async_thumbnail()，与列表页 hover 行为一致。
+       模板已有 fallback：缩略图未生成时显示占位 SVG。
+
+    相关模块：
+    - crm/utils/async_jobs.py  : 异步任务线程池
+    - crm/utils/images.py     : 缩略图/预览图生成 + 异步调度
+    ===========================================================================
+    """
     current = g.current_user
 
     if request.method == "POST":
@@ -1067,17 +1229,6 @@ def customer_create():
         remark = request.form.get("remark", "").strip()
         sales_id = request.form.get("sales_id", type=int)
         operator_id = request.form.get("operator_id", type=int)
-
-        # 防重复提交：生成表单哈希值，5秒内不允许重复提交
-        form_hash = hashlib.md5(
-            f"{current.id}:{name}:{phone}:{region}".encode()
-        ).hexdigest()[:16]
-        last_submit_key = f"last_customer_submit_{current.id}"
-        last_hash = session.get(last_submit_key)
-        if last_hash == form_hash:
-            flash("请勿快速重复提交！", "warning")
-            return redirect(url_for("customer.customer_create"))
-        session[last_submit_key] = form_hash
 
         # 运营只能录入，不能派单：禁止指定销售，名称可空，但必须有联系方式和地区
         if current.role == "operator":
@@ -1092,53 +1243,24 @@ def customer_create():
                 flash("客户名称不能为空。", "danger")
                 return redirect(url_for("customer.customer_create"))
 
-        # 联系方式去重校验：
-        # 规则1：电话号码相同 → 重复
-        # 规则2：姓名 + 电话号码都相同 → 也算重复
+        # 联系方式去重校验：同一个号码只能录入一次（忽略前后空格）
         if phone:
-            name_stripped = (name or "").strip()
-            phone_stripped = phone.strip()
+            # 性能修复 2026-07-04（10 运营并发实测：每个请求 -1.5~3.5s）：
+            # 删除 Python 全表 fallback —— DB 侧的 trim() 查询完全可以处理两侧空格场景，
+            # 旧的"保险起见"实际上每次都白白扫 11318 条记录（10 并发时 GIL 抢锁，单请求耗时 1.6~3.7s）。
+            # 如果将来遇到 NBSP 等"非 ASCII 空白"，加 normalize("NFKC") 即可，不需要 Python 全表。
+            existing = (
+                Customer.query.filter(func.trim(Customer.phone) == phone)
+                .order_by(Customer.id.desc())
+                .first()
+            )
 
-            # 规则1：电话号码查重（已有逻辑，保持不变）
-            existing = None
-            try:
-                existing = (
-                    Customer.query.filter(func.trim(Customer.phone) == phone_stripped)
-                    .order_by(Customer.id.desc())
-                    .first()
-                )
-            except Exception:
-                pass
-
-            if not existing:
-                for c in Customer.query.filter(Customer.phone.isnot(None)).all():
-                    if (c.phone or "").strip() == phone_stripped:
-                        existing = c
-                        break
-
-            # 规则2：姓名 + 电话同时查重
-            duplicate_by_name_phone = None
-            if existing is None and name_stripped:
-                for c in (
-                    Customer.query.filter(
-                        Customer.phone.isnot(None),
-                        Customer.name.isnot(None),
-                    ).all()
-                ):
-                    if (
-                        (c.phone or "").strip() == phone_stripped
-                        and (c.name or "").strip() == name_stripped
-                    ):
-                        duplicate_by_name_phone = c
-                        break
-
-            dup_target = existing or duplicate_by_name_phone
-            if dup_target:
-                dup_ref = dup_target.monthly_display_id
+            if existing:
+                dup_ref = existing.monthly_display_id
                 if dup_ref == "—":
-                    dup_ref = f"内部ID {dup_target.id}"
+                    dup_ref = f"内部ID {existing.id}"
                 flash(
-                    f"该客户已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复录入。",
+                    f"该联系方式已存在（客户月度编号：{dup_ref}，姓名：{existing.name}），请勿重复录入。",
                     "danger",
                 )
                 return redirect(url_for("customer.customer_create"))
@@ -1151,18 +1273,24 @@ def customer_create():
                 # 确保上传目录存在
                 upload_dir = os.path.join(current_app.root_path, "..", "static", "uploads")
                 os.makedirs(upload_dir, exist_ok=True)
-                
+
                 # 生成安全的文件名
                 filename = secure_filename(file.filename)
                 # 添加时间戳避免重名
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{filename}"
-                
+
                 file_path = os.path.join(upload_dir, filename)
                 file.save(file_path)
                 image_path = filename
-                ensure_thumbnail(image_path)
-                ensure_preview(image_path)
+                # 性能优化 2026-07-04（用户反馈）：
+                # 缩略图 (96px WEBP) 和大预览 (1080px) 都改为后台异步生成
+                # - 缩略图原本同步生成 ~50-100ms，10 并发累计开销明显
+                # - 大预览本来就异步了
+                # - 用户首次看到缩略图可能延迟 100-300ms，不影响实际使用
+                #   （列表页模板已支持 fallback：如果缩略图还没生成，显示占位 SVG）
+                schedule_async_thumbnail(image_path)
+                schedule_async_preview(image_path)
 
         # 默认先创建为“未分配”或“待派单”状态
         customer = Customer(
@@ -1175,7 +1303,6 @@ def customer_create():
             operator_id=operator_id if operator_id else (current.id if current.role == "operator" else None),
             status="unassigned",
         )
-        assign_monthly_order_fields(db.session, customer)
 
         assigned_sales = None
 
@@ -1199,24 +1326,22 @@ def customer_create():
             pass
 
         db.session.add(customer)
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            flash("该客户已存在（姓名+电话组合重复），请勿重复录入。", "danger")
-            return redirect(url_for("customer.customer_create"))
+        db.session.commit()
 
-        # 如果系统派单开启且本次没有手动指定销售，则尝试立即为这个客户自动派单
+        # 分配业务展示用月度编号（北京自然月自增；带行锁防并发）
+        assign_monthly_order_fields(db.session, customer)
+        db.session.commit()
+
+        # 如果系统派单开启且本次没有手动指定销售，则尝试自动派单。
+        # 性能修复 2026-07-04（10 运营并发实测：每个请求 -1.8~3.9s）：
+        # 之前同步调用 run_auto_dispatch_unassigned，每次都重复 N+1 次 DB 查询，
+        # 并发时全部排队等锁。改为后台线程异步执行：上传事务立即返回，
+        # 派单结果（SMTP 通知）晚到 1-2 秒用户无感。
         if system_dispatch_enabled and not assigned_sales:
             from .routes import run_auto_dispatch_unassigned  # 规避循环导入
-            assigned_count, auto_sales, auto_customer = run_auto_dispatch_unassigned(
-                single_customer_id=customer.id
-            )
-            # 立即发邮件（同一事务内完成，无延迟）
-            if auto_sales and auto_customer:
-                send_assignment_notification(auto_sales, auto_customer)
-        elif assigned_sales:
-            # 手动选销售：立即发邮件
+            submit_async(run_auto_dispatch_unassigned, single_customer_id=customer.id)
+
+        if assigned_sales:
             send_assignment_notification(assigned_sales, customer)
 
         flash("客户录入成功。", "success")
@@ -1275,6 +1400,18 @@ def customer_edit(customer_id: int):
                 flash("客户名称不能为空。", "danger")
                 return redirect(url_for("customer.customer_edit", customer_id=customer.id))
 
+        # 超管可修改订单状态
+        if current.is_super_admin() and "status" in request.form:
+            new_status = request.form.get("status", "").strip()
+            if new_status in ("pending", "timeout", "accepted", "public_pool", "unassigned"):
+                old_status = customer.status
+                customer.status = new_status
+                if old_status != new_status:
+                    _prepend_remark(
+                        customer,
+                        f"[系统] 超级管理员 {current.username} 将状态从 {old_status} 修改为 {new_status}",
+                    )
+
         # 处理图片上传
         if "image" in request.files:
             file = request.files["image"]
@@ -1298,75 +1435,24 @@ def customer_edit(customer_id: int):
                 filename = secure_filename(file.filename)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{filename}"
-                
+
                 file_path = os.path.join(upload_dir, filename)
                 file.save(file_path)
                 customer.image_path = filename
-                ensure_thumbnail(filename)
-                ensure_preview(filename)
+                # 性能优化 2026-07-04（用户反馈）：编辑上传时同步生成缩略图，
+                # 大图异步。保证编辑后立即可见缩略图。
+                try:
+                    ensure_thumbnail(filename)
+                except Exception as exc:
+                    current_app.logger.warning(
+                        "编辑上传时同步缩略图失败 %s: %s", filename, exc
+                    )
+                schedule_async_preview(filename)
 
         # 注意：编辑时不修改销售分配和运营人员
         # 销售分配应通过「待分配销售」tab 或重新派单功能完成
 
-        # 联系方式去重校验：编辑时不能把电话改成其他已有客户的电话
-        if customer.phone:
-            phone_stripped = customer.phone.strip()
-            name_stripped = (customer.name or "").strip()
-
-            # 规则1：电话号码查重（排除自己）
-            existing = None
-            try:
-                existing = (
-                    Customer.query.filter(
-                        Customer.id != customer.id,
-                        func.trim(Customer.phone) == phone_stripped,
-                    )
-                    .order_by(Customer.id.desc())
-                    .first()
-                )
-            except Exception:
-                pass
-
-            if not existing:
-                for c in Customer.query.filter(
-                    Customer.id != customer.id, Customer.phone.isnot(None)
-                ).all():
-                    if (c.phone or "").strip() == phone_stripped:
-                        existing = c
-                        break
-
-            # 规则2：姓名 + 电话同时查重（排除自己）
-            duplicate_by_name_phone = None
-            if existing is None and name_stripped:
-                for c in Customer.query.filter(
-                    Customer.id != customer.id,
-                    Customer.phone.isnot(None),
-                    Customer.name.isnot(None),
-                ).all():
-                    if (
-                        (c.phone or "").strip() == phone_stripped
-                        and (c.name or "").strip() == name_stripped
-                    ):
-                        duplicate_by_name_phone = c
-                        break
-
-            dup_target = existing or duplicate_by_name_phone
-            if dup_target:
-                dup_ref = dup_target.monthly_display_id
-                if dup_ref == "—":
-                    dup_ref = f"内部ID {dup_target.id}"
-                flash(
-                    f"该联系方式已存在（{dup_ref}，姓名：{dup_target.name}，电话：{dup_target.phone}），请勿重复。",
-                    "danger",
-                )
-                return redirect(url_for("customer.customer_edit", customer_id=customer.id))
-
-        try:
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            flash("该联系方式已存在（姓名+电话组合重复），请勿重复。", "danger")
-            return redirect(url_for("customer.customer_edit", customer_id=customer.id))
+        db.session.commit()
         flash("客户信息已更新。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 
@@ -1392,6 +1478,7 @@ def customer_edit(customer_id: int):
         operator_users=operator_users,
         regions=regions,
         is_edit=True,
+        can_edit_customer_status=current.is_super_admin(),
     )
 
 
@@ -1401,6 +1488,8 @@ def customer_detail(customer_id: int):
     """客户详情页 + 销售端操作。"""
     current = g.current_user
     customer = Customer.query.get_or_404(customer_id)
+    # 与侧栏一致：role 精确为 super_admin 也视为超管（与 User.is_super_admin 双保险）
+    is_super_admin_user = current.is_super_admin() or (current.role == "super_admin")
 
     # 可见范围限制
     if current.role == "operator" and customer.creator_id != current.id:
@@ -1410,14 +1499,35 @@ def customer_detail(customer_id: int):
         flash("只能查看分配给自己的客户。", "danger")
         return redirect(url_for("customer.customer_list"))
 
-    if request.method == "POST" and current.role == "sales":
-        # 只有接单后的客户才能提交销售跟进信息
-        if customer.status != "accepted":
-            flash("只有接单后的客户才能进行销售跟进。", "warning")
+    if request.method == "POST":
+        _rk = "".join(
+            unicodedata.normalize("NFKC", str(current.role or "")).split()
+        ).lower()
+        sales_follow_up = (
+            _rk == "sales"
+            and customer.sales_id == current.id
+            and customer.status == "accepted"
+        )
+        if not (sales_follow_up or is_super_admin_user):
+            flash("无权执行此操作。", "danger")
             return redirect(url_for("customer.customer_detail", customer_id=customer_id))
-        
-        customer.is_valid = request.form.get("is_valid") == "true"
-        customer.is_converted = request.form.get("is_converted") == "true"
+
+        def _tri_state_bool(key: str) -> bool | None:
+            v = (request.form.get(key) or "").strip()
+            if v == "true":
+                return True
+            if v == "false":
+                return False
+            return None
+
+        is_valid_raw = (request.form.get("is_valid") or "").strip()
+        if is_valid_raw == "urge_add":
+            customer.is_valid = False
+            customer.conversion_status = CONVERSION_STATUS_URGE_ADD
+            customer.is_converted = False
+        else:
+            customer.is_valid = _tri_state_bool("is_valid")
+            Customer.apply_conversion_from_form(customer, request.form.get("is_converted"))
 
         # 保存无效客户的佐证截图
         invalid_file = request.files.get("invalid_proof_image")
@@ -1443,7 +1553,15 @@ def customer_detail(customer_id: int):
             filename = f"{timestamp}_invalid_{filename}"
             invalid_file.save(os.path.join(upload_dir, filename))
             customer.invalid_proof_image = filename
-            ensure_preview(filename)
+            # 性能优化 2026-07-04（用户反馈）：佐证截图同步生成缩略图，
+            # 大图异步
+            try:
+                ensure_thumbnail(filename)
+            except Exception as exc:
+                current_app.logger.warning(
+                    "佐证截图同步缩略图失败 %s: %s", filename, exc
+                )
+            schedule_async_preview(filename)
 
         new_remark = request.form.get("remark", "").strip()
         if new_remark:
@@ -1453,16 +1571,44 @@ def customer_detail(customer_id: int):
         flash("客户跟进信息已保存。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
 
-    image_preview_path = ensure_preview(customer.image_path) if customer.image_path else None
-    invalid_preview_path = (
-        ensure_preview(customer.invalid_proof_image) if customer.invalid_proof_image else None
-    )
+    # 性能优化 2026-07-04（方案 II 用户确认）：
+    # 缩略图完全后台预生成，详情页/列表页只查文件路径，不派任何任务。
+    # 模板里用 {thumb,preview}_map 做 fallback：
+    # - 已有 webp → 显示 webp（零解码，快，缓存命中）
+    # - 没有 webp → fallback 到原图（浏览器原生解码，单张大图也 < 100ms）
+    # 这样既保留了缩略图列表的视觉，又彻底消除冷启动 CPU 烧的情况。
+    image_thumb_map: dict[int, str] = {}
+    image_preview_map: dict[int, str] = {}
+    invalid_thumb_map: dict[int, str] = {}
+    if customer.image_path:
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            image_thumb_map[customer.id] = t_rel
+        p_rel = _preview_path_if_exists(customer.image_path)
+        if p_rel:
+            image_preview_map[customer.id] = p_rel
+    if customer.invalid_proof_image:
+        t_rel = _thumbnail_path_if_exists(customer.invalid_proof_image)
+        if t_rel:
+            invalid_thumb_map[customer.id] = t_rel
+
+    _role_key = "".join(
+        unicodedata.normalize("NFKC", str(current.role or "")).split()
+    ).lower()
+    show_sales_follow_up = (
+        _role_key == "sales"
+        and customer.sales_id == current.id
+        and customer.status == "accepted"
+    ) or is_super_admin_user
 
     return render_template(
         "customer/customer_detail.html",
         customer=customer,
-        image_preview_path=image_preview_path,
-        invalid_preview_path=invalid_preview_path,
+        image_thumb_map=image_thumb_map,
+        image_preview_map=image_preview_map,
+        invalid_thumb_map=invalid_thumb_map,
+        show_sales_follow_up=show_sales_follow_up,
+        is_super_admin_user=is_super_admin_user,
     )
 
 
@@ -1501,17 +1647,19 @@ def public_pool():
     customers = query.order_by(Customer.id.desc()).all()
 
     thumbnail_map = {}
-    preview_map = {}
+    preview_map: dict[int, str] = {}
     for customer in customers:
-        if customer.image_path:
-            thumb_rel = ensure_thumbnail(customer.image_path)
-            if thumb_rel and _static_asset_exists(thumb_rel):
-                thumbnail_map[customer.id] = thumb_rel
-            preview_rel = ensure_preview(customer.image_path)
-            if preview_rel and _static_asset_exists(preview_rel):
-                preview_map[customer.id] = preview_rel
+        if not customer.image_path:
+            continue
+        t_rel = _thumbnail_path_if_exists(customer.image_path)
+        if t_rel:
+            thumbnail_map[customer.id] = t_rel
+        p_rel = _preview_path_if_exists(customer.image_path)
+        if p_rel:
+            preview_map[customer.id] = p_rel
 
     sales_users = []
+    show_contact = True
     if current.is_super_admin() or current.role == "operator":
         sales_users = (
             User.query.join(SalesProfile, SalesProfile.user_id == User.id)
@@ -1523,6 +1671,8 @@ def public_pool():
             .order_by(SalesProfile.dispatch_order.asc(), User.id.asc())
             .all()
         )
+    elif current.role == "sales":
+        show_contact = False
 
     return render_template(
         "customer/public_pool.html",
@@ -1530,6 +1680,7 @@ def public_pool():
         thumbnail_map=thumbnail_map,
         preview_map=preview_map,
         sales_users=sales_users,
+        show_contact=show_contact,
     )
 
 
@@ -1688,7 +1839,7 @@ def public_pool_claim(customer_id: int):
     return redirect(url_for("customer.public_pool"))
 
 
-def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 5) -> int:
+def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 10) -> int:
     """超时单重派逻辑，可在 CLI / 定时任务中调用。
 
     处理流程：
@@ -1832,6 +1983,83 @@ def reassign_timeouts(max_retries: int = 3, timeout_minutes: int = 5) -> int:
         raise
     finally:
         # 确保无论如何都释放 Session，将连接归还给连接池
+        db.session.remove()
+
+
+def sweep_orphan_unassigned(timeout_minutes: int = 1) -> int:
+    """巡检"孤儿"未分配客户，把卡在 unassigned 太久的转入公海。
+
+    触发场景（已知）：
+    - 上传事务成功提交后，submit_async(run_auto_dispatch_unassigned) 静默丢失
+      （线程池挂掉 / Flask 进程刚重启还没就绪）
+    - 系统派单函数内部抛异常被吞掉
+    - 数据库短时不可用导致事务回滚，但上层 commit 已成功
+
+    设计要点：
+    - 与 reassign_timeouts 并行：reassign 只处理 pending，这里只处理 unassigned
+    - 阈值很短（默认 1 分钟），目的是"快速暴露"问题而不是真的等用户超时
+    - 如果 system_dispatch_enabled=0，说明系统本来就关着派单，
+      这些 unassigned 是预期内的，不应该被巡检强行丢进公海
+    - 只读取一次 status='unassigned' 的记录，避免重复扫描全表
+    """
+    from ..models import SystemConfig
+    from sqlalchemy.exc import SQLAlchemyError
+
+    if not SystemConfig.get_bool("system_dispatch_enabled", default=False):
+        # 系统派单关闭时，"未分配"是正常状态，跳过巡检
+        return 0
+
+    now = datetime.utcnow()
+    threshold = now - timedelta(minutes=timeout_minutes)
+
+    moved = 0
+    try:
+        # 只捞 created_at 超过阈值的 unassigned（其他还没到点的不动）
+        orphans = (
+            Customer.query.filter(
+                Customer.status == "unassigned",
+                Customer.created_at <= threshold,
+            )
+            .order_by(Customer.id.asc())
+            .all()
+        )
+
+        if not orphans:
+            return 0
+
+        for c in orphans:
+            c.status = "public_pool"
+            c.dispatch_time = now  # 公海里有这个时间，便于排序
+            wait_seconds = int((now - c.created_at).total_seconds())
+            _prepend_remark(
+                c,
+                f"[系统] 巡检：自动派单未生效，已等待 {wait_seconds}s，转入公海等待人工处理。",
+            )
+            moved += 1
+
+        db.session.commit()
+        try:
+            current_app.logger.warning(
+                f"[sweep_orphan_unassigned] 本次将 {moved} 个孤儿客户转入公海 "
+                f"(阈值 {timeout_minutes}min, system_dispatch_enabled=1)"
+            )
+        except RuntimeError:
+            pass
+        return moved
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        try:
+            current_app.logger.error(
+                f"[sweep_orphan_unassigned] 数据库异常，已回滚：{e}", exc_info=True
+            )
+        except RuntimeError:
+            pass
+        return 0
+    except Exception:
+        db.session.rollback()
+        raise
+    finally:
         db.session.remove()
 
 

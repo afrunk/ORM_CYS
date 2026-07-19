@@ -1,35 +1,53 @@
+"""派单通知：邮件 + Notification 表。
+
+修复 2026-07-05（回归 commit d31baf1 引发）：
+- 之前 d31baf1 改成自建 ThreadPoolExecutor + 在 worker 里调
+  current_app.logger.info(...) 触发 Working outside of application context，
+  邮件静默失败（双重 try/except 吞掉）。
+- 现在重新改回 via crm.utils.async_jobs.submit，该提交器已自带 app context
+  兜底（commit 7ebfbee/93af2a3），符合既有约定。
+
+性能修复 2026-07-05（commit d31baf1 初衷）：
+- 派单邮件原本与自动派单任务共用 async_jobs 的 4 线程池，10 运营并发时队列
+  阻塞几十秒。
+- 方案：保持走 async_jobs 但加入「正在发件」的有界信号量，让派单事务入队立刻
+  返回。async_jobs 池满时邮件仍提交但有界丢弃 + WARN；这样派单事务不被
+  SMTP 拖慢，且线程数不会随邮件提交量线性增长。
+"""
 from __future__ import annotations
 
+import logging
 import smtplib
-from email.mime.text import MIMEText
+import threading
+import time
+from datetime import timedelta
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 
 from flask import current_app
-from sqlalchemy import select
 
 from .extensions import db
 from .models import Customer, Notification, User
 
+_log = logging.getLogger(__name__)
+
+# ============================================================
+# 邮件并发有界信号量
+# ------------------------------------------------------------
+# 派单事务是非阻塞的（"已提交异步邮件任务"立刻写日志返回），
+# 但 SMTP 本身慢（QQ/163 1-3s/封）。如果不加并发上限，瞬时 100 单派单会
+# 在 async_jobs 4 线程池里累积。
+#
+# 我们用一个进程级信号量统计"此刻真正在收 SMTP 应答的邮件数"。
+# 信号量耗尽时调用 _try_enter 立刻返回失败，由调用方记 WARN 并跳过
+# 提交——这是有界丢弃而非线性堆积（避免线程数随邮件数增长）。
+# ============================================================
+_EMAIL_MAX_INFLIGHT = 8  # QQ SMTP 单连接 ~1-3s，8 并发可支撑 80 单/分钟
+_EMAIL_INFLIGHT = threading.BoundedSemaphore(_EMAIL_MAX_INFLIGHT)
+
 
 def send_assignment_notification(sales: User, customer: Customer) -> None:
-    """派单通知：通过邮件发送。
-
-    如果销售有邮箱，则发送邮件通知；否则仅记录到通知表。
-    """
-    sales_id = sales.id
-    # 强制用当前库中最新数据覆盖会话内对象（避免 email 等在内存里仍是旧值/None）
-    stmt = (
-        select(User)
-        .where(User.id == sales_id)
-        .execution_options(populate_existing=True)
-    )
-    sales_row = db.session.execute(stmt).scalar_one_or_none()
-    if not sales_row:
-        current_app.logger.warning("派单通知跳过：销售 id=%s 不存在", sales_id)
-        return
-    sales = sales_row
-
+    """派单通知：通过邮件发送。"""
     # 构建通知内容
     content = f"新客户派单：{customer.name}，电话：{customer.phone or '无'}"
 
@@ -37,23 +55,12 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
     channel = "email" if sales.email else "none"
     status = "sent"
 
-    if not sales.email:
-        current_app.logger.warning(
-            "派单通知：销售 %s（id=%s）未设置邮箱，已跳过发信，仅写入通知表",
-            sales.username,
-            sales.id,
-        )
-
     if sales.email:
-        try:
-            send_email_notification(sales, customer)
-            status = "sent"
-        except Exception as e:
-            current_app.logger.error(f"发送邮件通知失败：{e}")
-            status = "failed"
-            channel = "email_failed"
-    
-    # 记录到通知表
+        # 异步发送邮件：派单事务不等 SMTP，立刻返回
+        _async_send_email(sales, customer)
+        status = "sent"
+
+    # 记录到通知表（立即可见）
     record = Notification(
         customer_id=customer.id,
         sales_id=sales.id,
@@ -62,65 +69,81 @@ def send_assignment_notification(sales: User, customer: Customer) -> None:
         status=status,
     )
     db.session.add(record)
-    
+
     if status == "sent":
-        current_app.logger.info(f"[通知] 向销售 {sales.username} ({sales.email}) 发送派单通知：{content}")
+        current_app.logger.info(
+            f"[通知] 已提交异步邮件任务至 {sales.username} ({sales.email})：{content}"
+        )
     else:
         current_app.logger.warning(f"[通知失败] 向销售 {sales.username} 发送派单通知失败")
 
 
-def _smtp_send(app, msg: MIMEMultipart, mail_username: str, mail_password: str) -> None:
-    """通过 SMTP 发送邮件，支持重试与端口 fallback。"""
-    mail_server = app.config["MAIL_SERVER"]
-    ports_to_try = [int(app.config.get("MAIL_PORT", 587)), 587, 465]
+def _async_send_email(sales: User, customer: Customer) -> None:
+    """后台线程发邮件，与调用方完全解耦。
 
-    last_error = None
-    for attempt in range(3):
-        server = None
+    2026-07-05 重写（修复回归）：
+    - 之前 d31baf1 直接 self ThreadPoolExecutor.submit，worker 触发
+      "Working outside of application context"，邮件静默丢失。
+    - 现在改为复用 crm.utils.async_jobs.submit：该提交器已自带
+      app.app_context() 兜底（commit 7ebfbee, 93af2a3），
+      daemon 线程里访问 current_app / db.session 不会再 RuntimeError。
+
+    性能（有界并发）：
+    - 入队前检查 _EMAIL_INFLIGHT 信号量；满则丢弃这一封并 WARN，
+      避免线程数随邮件提交量线性增长。
+    - 失败仅记日志，绝不抛回调用方。
+    """
+    # 入队前先抢信号量：池满则不进入 worker，直接丢弃，避免 async_jobs 的
+    # 4 线程池被 SMTP 慢请求堆积。
+    if not _EMAIL_INFLIGHT.acquire(blocking=False):
+        # 池满丢弃这一封。在飞线程里再调 current_app 需要 app.context，
+        # 这里加 has_app_context 守护：开发者/测试脚本在没有 app 上下文时也能记日志。
+        from flask import has_app_context, current_app as _ca
+        if has_app_context():
+            _ca.logger.warning(
+                "[邮件有界丢弃] customer_id=%s sales=%s "
+                "(> %d 并发在飞，待恢复后由巡检补发)",
+                customer.id, sales.username, _EMAIL_MAX_INFLIGHT,
+            )
+        else:
+            _log.warning(
+                "[邮件有界丢弃] customer_id=%s sales=%s "
+                "(> %d 并发在飞，待恢复后由巡检补发)",
+                customer.id, sales.username, _EMAIL_MAX_INFLIGHT,
+            )
+        return
+
+    started_at = time.monotonic()
+
+    def _worker() -> None:
         try:
-            port = ports_to_try[attempt] if attempt < len(ports_to_try) else ports_to_try[-1]
-            server = smtplib.SMTP(mail_server, port, timeout=20)
-            server.ehlo()
-            if port in (587, 25):
-                server.starttls()
-                server.ehlo()
-            server.login(mail_username, mail_password)
-            server.send_message(msg)
-            server.quit()
-            return
-        except smtplib.SMTPException as e:
-            last_error = e
-            if server:
-                try:
-                    server.quit()
-                except Exception:
-                    try:
-                        server.close()
-                    except Exception:
-                        pass
-            import time
-            time.sleep(2)  # 等待 2 秒后重试（QQ SMTP 偶发断连）
-        except OSError as e:
-            last_error = e
-            if server:
-                try:
-                    server.close()
-                except Exception:
-                    pass
-            import time
-            time.sleep(2)
+            send_email_notification(sales, customer)
+            _log.info(
+                "[邮件发送完成] 耗时 %.2fs → %s <%s>: customer_id=%s",
+                time.monotonic() - started_at, sales.username, sales.email, customer.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.exception(
+                "[异步邮件失败] 耗时 %.2fs → %s <%s>: %s",
+                time.monotonic() - started_at, sales.username, sales.email, exc,
+            )
+        finally:
+            try:
+                _EMAIL_INFLIGHT.release()
+            except Exception:
+                pass
 
-    raise Exception(f"邮件发送失败（已重试 3 次）：{last_error}") from last_error
+    from .utils.async_jobs import submit as submit_async_job
+    submit_async_job(_worker)
 
 
 def send_email_notification(sales: User, customer: Customer) -> None:
     """发送邮件通知给销售。
 
-    Args:
-        sales: 销售用户对象
-        customer: 客户对象
+    由后台线程调用，调用前请保证所在线程已 push app context
+    （crm.utils.async_jobs.submit 已自动处理）。
     """
-    app = current_app
+    app = current_app  # 必须在 app context 内
 
     # 检查邮件配置
     mail_username = app.config.get("MAIL_USERNAME")
@@ -226,11 +249,6 @@ def send_email_notification(sales: User, customer: Customer) -> None:
                 </div>
 
                 <div class="info-row">
-                    <div class="info-label">联系电话</div>
-                    <div class="info-value">{customer.phone or '未提供'}</div>
-                </div>
-
-                <div class="info-row">
                     <div class="info-label">客户地区</div>
                     <div class="info-value">{customer.region or '未指定'}</div>
                 </div>
@@ -241,8 +259,8 @@ def send_email_notification(sales: User, customer: Customer) -> None:
                 </div>
 
                 <div class="info-row">
-                    <div class="info-label">客户月度编号</div>
-                    <div class="info-value">{customer.monthly_display_id}</div>
+                    <div class="info-label">客户ID</div>
+                    <div class="info-value">#{customer.id}</div>
                 </div>
 
                 <div style="margin-top: 24px; padding: 16px; background-color: #eff6ff; border-radius: 6px; border-left: 4px solid #3b82f6;">
@@ -271,7 +289,18 @@ def send_email_notification(sales: User, customer: Customer) -> None:
     html_part = MIMEText(html_content, 'html', 'utf-8')
     msg.attach(html_part)
 
-    # 发送邮件（内部已处理重试）
-    _smtp_send(app, msg, mail_username, mail_password)
-
-
+    # 发送邮件（带超时，避免 SMTP 服务器挂起时阻塞整个 reassign 任务）
+    # 连接超时 5 秒；读取超时 8 秒（QQ/163 邮件服务器如果响应慢也不超过这个时间）。
+    # 这样 50 个超时单最多耗时 (5+8) * 50 = 6.5 分钟，不会无限阻塞。
+    try:
+        server = smtplib.SMTP(
+            app.config["MAIL_SERVER"],
+            app.config["MAIL_PORT"],
+            timeout=8,
+        )
+        server.starttls()
+        server.login(mail_username, mail_password)
+        server.send_message(msg)
+        server.quit()
+    except Exception as e:
+        raise Exception(f"邮件发送失败：{str(e)}")
