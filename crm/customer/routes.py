@@ -45,6 +45,7 @@ from ..utils.images import (
     schedule_async_thumbnail,
 )
 from ..utils.timewindow import get_shift_window_utc, get_yesterday_window_utc
+from ..utils.monthly_order import assign_monthly_order_fields
 
 # 简单的进程内缓存：用于减轻 region-stats 接口的数据库压力
 # key: (role_key, user_id, shift_window_key), value: (data, expire_at)
@@ -1326,8 +1327,6 @@ def customer_create():
             pass
 
         db.session.add(customer)
-        db.session.commit()
-
         # 分配业务展示用月度编号（北京自然月自增；带行锁防并发）
         assign_monthly_order_fields(db.session, customer)
         db.session.commit()
