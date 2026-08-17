@@ -563,7 +563,7 @@
       </thead>
       <tbody>
         {% for c in customers %}
-        <tr data-customer-id="{{ c.id }}" onclick="onCustomerRowClick({{ c.id }}, this)">
+        <tr data-customer-id="{{ c.id }}" data-customer-name="{{ c.name }}" onclick="onCustomerRowClick({{ c.id }}, '{{ c.name|tojson|safe }}', this)">
           {# 序号按最新在前的排序倒序编号 #}
           <td>{{ pagination.total - (pagination.page - 1) * per_page - loop.index0 }}</td>
           <td>{{ c.monthly_display_id }}</td>
@@ -788,6 +788,7 @@
 
 <script>
 let selectedCustomerId = null;
+let selectedCustomerName = null;
 
 function editSelectedCustomer() {
   if (!selectedCustomerId) {
@@ -804,10 +805,24 @@ function deleteSelectedCustomer() {
     return;
   }
   if (!confirm('确定要删除此客户吗？删除后无法恢复，相关数据将被清理。')) return;
-  
+
+  // 强制二次确认：要求运营准确输入客户名（服务端会校验完全相同）
+  const typedName = (prompt(
+    '为防误操作，请输入客户名【' + selectedCustomerName + '】以确认删除：'
+  ) || '').trim();
+  if (typedName !== (selectedCustomerName || '').trim()) {
+    alert('客户名输入不匹配，已取消删除。');
+    return;
+  }
+
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = `/customers/${selectedCustomerId}/delete`;
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.name = 'sales_confirm';
+  input.value = typedName;
+  form.appendChild(input);
   document.body.appendChild(form);
   form.submit();
 }
@@ -819,13 +834,14 @@ function resetFilters() {
 }
 
 // 选中某一行客户（仅高亮 + 记录 ID，不再自动跳转编辑页）
-function onCustomerRowClick(id, rowEl) {
+function onCustomerRowClick(id, name, rowEl) {
   document.querySelectorAll('.data-table tbody tr').forEach(r => r.classList.remove('selected'));
   if (rowEl) {
     rowEl.classList.add('selected');
   }
   selectedCustomerId = id;
-  console.log('Selected customer row (inline):', selectedCustomerId);
+  selectedCustomerName = name;
+  console.log('Selected customer row (inline):', selectedCustomerId, selectedCustomerName);
   // 如需进入编辑，请点击上方“修改”按钮或操作列里的“查看”链接
 }
 

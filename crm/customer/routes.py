@@ -1383,6 +1383,13 @@ def customer_edit(customer_id: int):
             return redirect(url_for("customer.customer_list"))
 
     if request.method == "POST":
+        # 审计：记录改之前的值用于变更对比
+        _audit_before = {
+            "name": customer.name,
+            "phone": customer.phone,
+            "region": customer.region,
+            "remark": customer.remark,
+        }
         customer.name = request.form.get("name", "").strip()
         customer.phone = request.form.get("phone", "").strip()
         customer.region = request.form.get("region", "").strip()
@@ -1451,6 +1458,22 @@ def customer_edit(customer_id: int):
         # 注意：编辑时不修改销售分配和运营人员
         # 销售分配应通过「待分配销售」tab 或重新派单功能完成
 
+        # 审计：记录本次编辑的实际变更
+        _changes = []
+        for _field in ("name", "phone", "region", "remark"):
+            if _audit_before[_field] != getattr(customer, _field):
+                _changes.append(
+                    f"{_field}: {_audit_before[_field]!r} -> {getattr(customer, _field)!r}"
+                )
+        if _changes:
+            current_app.logger.info(
+                "[AUDIT] customer_edit id=%s by user=%s(role=%s) changes=%s",
+                customer.id,
+                getattr(current, "username", "?"),
+                getattr(current, "role", "?"),
+                " | ".join(_changes),
+            )
+
         db.session.commit()
         flash("客户信息已更新。", "success")
         return redirect(url_for("customer.customer_detail", customer_id=customer.id))
@@ -1511,6 +1534,16 @@ def customer_detail(customer_id: int):
             flash("无权执行此操作。", "danger")
             return redirect(url_for("customer.customer_detail", customer_id=customer_id))
 
+        # 审计：记录改之前的值 + 表单快照（SHUCI0925 谜案教训）
+        _audit_before = {
+            "is_valid": customer.is_valid,
+            "is_converted": customer.is_converted,
+            "conversion_status": customer.conversion_status,
+            "invalid_proof_image": customer.invalid_proof_image,
+            "remark": customer.remark,
+        }
+        _urgent_flag = (request.form.get("is_valid") or "").strip()
+
         def _tri_state_bool(key: str) -> bool | None:
             v = (request.form.get(key) or "").strip()
             if v == "true":
@@ -1519,7 +1552,7 @@ def customer_detail(customer_id: int):
                 return False
             return None
 
-        is_valid_raw = (request.form.get("is_valid") or "").strip()
+        is_valid_raw = _urgent_flag
         if is_valid_raw == "urge_add":
             customer.is_valid = False
             customer.conversion_status = CONVERSION_STATUS_URGE_ADD
@@ -1530,6 +1563,8 @@ def customer_detail(customer_id: int):
 
         # 保存无效客户的佐证截图
         invalid_file = request.files.get("invalid_proof_image")
+        _invalid_uploaded = bool(invalid_file and invalid_file.filename)
+
         if invalid_file and invalid_file.filename:
             upload_dir = os.path.join(current_app.root_path, "..", "static", "uploads")
             os.makedirs(upload_dir, exist_ok=True)
@@ -1565,6 +1600,34 @@ def customer_detail(customer_id: int):
         new_remark = request.form.get("remark", "").strip()
         if new_remark:
             _prepend_remark(customer, new_remark)
+
+        # 审计：客户详情页 POST 的实际变更（SHUCI0925 谜案教训：无外部痕迹）
+        _changes = []
+        for _field in (
+            "is_valid",
+            "is_converted",
+            "conversion_status",
+            "invalid_proof_image",
+            "remark",
+        ):
+            if _audit_before[_field] != getattr(customer, _field):
+                _changes.append(
+                    f"{_field}: {_audit_before[_field]!r} -> {getattr(customer, _field)!r}"
+                )
+        if _invalid_uploaded:
+            _changes.append("invalid_proof_image=UPLOADED_NEW_FILE")
+        if _urgent_flag == "urge_add":
+            _changes.append("urgent_flag=urge_add")
+        if _changes or new_remark:
+            current_app.logger.info(
+                "[AUDIT] customer_followup id=%s by user=%s(role=%s) urgent=%s changes=%s new_remark=%r",
+                customer.id,
+                getattr(current, "username", "?"),
+                getattr(current, "role", "?"),
+                _urgent_flag,
+                " | ".join(_changes) if _changes else "<none>",
+                new_remark[:100] if new_remark else None,
+            )
 
         db.session.commit()
         flash("客户跟进信息已保存。", "success")
@@ -1633,6 +1696,14 @@ def customer_accept(customer_id: int):
     customer.status = "accepted"
     customer.accepted_time = datetime.utcnow()
     db.session.commit()
+    current_app.logger.warning(
+        "[AUDIT] customer_accept id=%s by user=%s(role=%s) "
+        "pending -> accepted, sales_id=%s",
+        customer.id,
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        customer.sales_id,
+    )
     flash("接单成功。", "success")
     return redirect(request.referrer or url_for("customer.customer_list"))
 
@@ -1718,13 +1789,21 @@ def pending_assign(customer_id: int):
     customer.dispatcher_id = current.id
     customer.dispatch_time = datetime.utcnow()
     customer.status = "pending"
-    
+
     # 记录派单信息
     dispatcher_role = "超级管理员" if current.role == "super_admin" else "数据员"
     _prepend_remark(customer, f"[系统] {dispatcher_role}手动派单给 {sales.username}")
-    
+
     db.session.commit()
     send_assignment_notification(sales, customer)
+    current_app.logger.warning(
+        "[AUDIT] pending_assign id=%s by user=%s(role=%s) "
+        "unassigned -> pending, sales_id=%s",
+        customer.id,
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        sales.id,
+    )
     
     flash(f"客户已派单给 {sales.username}。", "success")
     return redirect(url_for("customer.customer_list", tab="pending"))
@@ -1761,6 +1840,14 @@ def public_pool_assign(customer_id: int):
     db.session.commit()
 
     send_assignment_notification(sales, customer)
+    current_app.logger.warning(
+        "[AUDIT] public_pool_assign id=%s by user=%s(role=%s) "
+        "public_pool -> pending, sales_id=%s",
+        customer.id,
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        sales.id,
+    )
 
     flash("公海客户已分配给销售。", "success")
     return redirect(url_for("customer.public_pool"))
@@ -1788,6 +1875,7 @@ def release_to_public_pool(customer_id: int):
         return redirect(request.referrer or url_for("customer.customer_list"))
     
     # 释放到公海
+    _prev_sales_id = customer.sales_id
     customer.status = "public_pool"
     customer.sales_id = None  # 清除销售分配
     customer.dispatcher_id = None
@@ -1795,9 +1883,17 @@ def release_to_public_pool(customer_id: int):
     
     operator_name = "超级管理员" if current.role == "super_admin" else ("数据员" if current.role == "data_entry" else "运营")
     _prepend_remark(customer, f"[系统] {operator_name} {current.username} 将客户释放到公海。")
-    
+
     db.session.commit()
-    
+    current_app.logger.warning(
+        "[AUDIT] release_to_public_pool id=%s by user=%s(role=%s) "
+        "pending -> public_pool, prev_sales_id=%s",
+        customer.id,
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        _prev_sales_id,
+    )
+
     flash("客户已释放到公海。", "success")
     return redirect(request.referrer or url_for("customer.customer_list"))
 
@@ -1833,6 +1929,14 @@ def public_pool_claim(customer_id: int):
     )
     db.session.commit()
     send_assignment_notification(current, customer)
+    current_app.logger.warning(
+        "[AUDIT] public_pool_claim id=%s by user=%s(role=%s) "
+        "public_pool -> accepted, sales_id=%s",
+        customer.id,
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        current.id,
+    )
 
     flash("领取并接单成功，请尽快跟进。", "success")
     return redirect(url_for("customer.public_pool"))
@@ -2065,7 +2169,15 @@ def sweep_orphan_unassigned(timeout_minutes: int = 1) -> int:
 @customer_bp.route("/<int:customer_id>/delete", methods=["POST"])
 @login_required
 def customer_delete(customer_id: int):
-    """删除客户（物理删除：从数据库中彻底删除）。"""
+    """删除客户（物理删除：从数据库中彻底删除）。
+
+    审计 + 保护（2026-08-17 改进，背景：SHUCI0925 谜案 + 历史日志只起 7-12
+    无法追溯谁删了什么）：
+    - 必填 sales_confirm=客户名 才允许删除
+    - status==accepted (已成交) 只有超管才能删
+    - 创建超过 30 天的客户一律不可物理删除（防止历史业绩被误抹）
+    - 所有删除动作用 logger.warning 留痕，进入 app.out/app.log
+    """
     current = g.current_user
     customer = Customer.query.get_or_404(customer_id)
 
@@ -2075,8 +2187,72 @@ def customer_delete(customer_id: int):
             flash("无权删除此客户。", "danger")
             return redirect(url_for("customer.customer_list"))
 
+    # 保护 1：status==accepted (已成交) 只有超管能删
+    if customer.status == "accepted" and not current.is_super_admin():
+        current_app.logger.warning(
+            "[AUDIT][DENY] customer_delete id=%s by user=%s(role=%s) "
+            "DENIED: status=accepted, non-super-admin attempt",
+            customer.id,
+            getattr(current, "username", "?"),
+            getattr(current, "role", "?"),
+        )
+        flash("该客户已成交，只有超级管理员可以删除。如确需删除，请联系超管。", "danger")
+        return redirect(url_for("customer.customer_detail", customer_id=customer.id))
+
+    # 保护 2：超过 30 天的客户一律不能物理删除
+    age_days = None
+    if customer.created_at:
+        try:
+            age_days = (datetime.now() - customer.created_at).total_seconds() / 86400
+        except Exception:
+            age_days = None
+    if age_days is not None and age_days > 30 and not current.is_super_admin():
+        current_app.logger.warning(
+            "[AUDIT][DENY] customer_delete id=%s by user=%s(role=%s) "
+            "DENIED: age=%.1fd exceeds 30d",
+            customer.id,
+            getattr(current, "username", "?"),
+            getattr(current, "role", "?"),
+            age_days,
+        )
+        flash(
+            f"该客户已录入 {int(age_days)} 天，超过 30 天的客户不可物理删除。"
+            "如确需删除，请联系超管。",
+            "danger",
+        )
+        return redirect(url_for("customer.customer_detail", customer_id=customer.id))
+
+    # 保护 3：需输入客户名确认（防误操作 + 防 CSRF 误触发）
+    confirm_name = (request.form.get("sales_confirm") or "").strip()
+    if confirm_name != customer.name:
+        current_app.logger.warning(
+            "[AUDIT][DENY] customer_delete id=%s by user=%s(role=%s) "
+            "DENIED: confirm mismatch, expected=%r got=%r",
+            customer.id,
+            getattr(current, "username", "?"),
+            getattr(current, "role", "?"),
+            customer.name,
+            confirm_name,
+        )
+        flash("删除确认失败：请准确输入客户名称。", "danger")
+        return redirect(url_for("customer.customer_detail", customer_id=customer.id))
+
+    # 全部通过，记录审计快照
+    customer_snapshot = {
+        "id": customer.id,
+        "name": customer.name,
+        "phone": customer.phone,
+        "region": customer.region,
+        "creator_id": customer.creator_id,
+        "sales_id": customer.sales_id,
+        "status": customer.status,
+        "created_at": str(customer.created_at),
+        "monthly_order_ym": customer.monthly_order_ym,
+        "monthly_order_key": customer.monthly_order_key,
+        "age_days": round(age_days, 1) if age_days is not None else None,
+    }
     customer_name = customer.name
-    
+
     # 1. 删除关联的通知记录
     Notification.query.filter_by(customer_id=customer.id).delete()
     
@@ -2106,7 +2282,16 @@ def customer_delete(customer_id: int):
     # 4. 删除客户记录
     db.session.delete(customer)
     db.session.commit()
-    
+
+    # 审计：删除成功（snapshot 已记录所有字段，即便物理删除也能追溯）
+    current_app.logger.warning(
+        "[AUDIT] customer_delete OK id=%s by user=%s(role=%s) snapshot=%s",
+        customer_snapshot["id"],
+        getattr(current, "username", "?"),
+        getattr(current, "role", "?"),
+        customer_snapshot,
+    )
+
     flash(f"客户 {customer_name} 已删除。", "success")
     return redirect(url_for("customer.customer_list"))
 
