@@ -8,8 +8,8 @@ User=root
 WorkingDirectory=/opt/crm_system
 Environment="PATH=/opt/crm_system/venv/bin"
 Environment="SECRET_KEY=your-production-secret-key-change-this"
-Environment="MAIL_USERNAME=afrunk@foxmail.com"
-Environment="MAIL_PASSWORD=sgcwkqlwirfcdiij"
+Environment="MAIL_USERNAME=773913861@qq.com"
+Environment="MAIL_PASSWORD=avbghlqvqadbbfgg"
 Environment="FLASK_ENV=production"
 Environment="FLASK_APP=app.py"
 ExecStart=/opt/crm_system/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 120 app:create_flask_app
