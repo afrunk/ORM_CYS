@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}运营录入详情 - {{ operator_name }}{% endblock %}
+
+{% block page_title %}运营录入详情{% endblock %}
+
+{% block body %}
+<div class="page-content">
+  <div class="panel">
+    <header class="panel-header" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+      <div>
+        <div class="panel-title">运营：{{ operator_name }} （ID: {{ operator_id }}）</div>
+        <div class="panel-subtitle">统计区间内的录入明细（共 {{ total }} 条）</div>
+      </div>
+      <div class="header-actions" style="margin-left:auto;">
+        <a class="modern-btn primary btn-lg" href="{{ url_for('stats.stats_index', start=start, end=end, preset=preset) }}" style="white-space:nowrap;">
+          返回统计
+        </a>
+      </div>
+    </header>
+    {% if region_stats %}
+    <section class="region-summary" style="margin: 16px 0;">
+      <h4>按地区汇总（本统计区间）</h4>
+      <div class="data-table-wrapper" style="margin-top:8px;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>地区</th>
+              <th>数量</th>
+              <th>转化数</th>
+              <th>转化率</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in region_stats %}
+            <tr>
+              <td>{{ r.region }}</td>
+              <td>{{ r.total }}</td>
+              <td>{{ r.converted }}</td>
+              <td>{{ r.rate }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    <div class="data-table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>客户ID</th>
+            <th>地区</th>
+            <th>录入时间（北京时间）</th>
+            <th>是否转化</th>
+            <th>接单人</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.region }}</td>
+            <td>{{ r.created_at }}</td>
+            <td>{{ "是" if r.is_converted else "否" }}</td>
+            <td>{{ r.sales }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="5" class="empty-state">
+              <div class="empty-state-icon">📭</div>
+              <p class="empty-state-text">暂无数据</p>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+

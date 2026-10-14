@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}客户详情 #{{ customer.id }} - 客户管理系统{% endblock %}
+
+{% block page_title %}客户详情 #{{ customer.id }}{% endblock %}
+
+{% block page_header %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+  <h1 class="h2">客户详情 #{{ customer.id }}</h1>
+  <a href="{{ url_for('customer.customer_list') }}" class="btn-action">
+    <i class="bi-arrow-left"></i> 返回列表
+  </a>
+</div>
+{% endblock %}
+
+{% block body %}
+<div class="page-content">
+
+  <div class="form-card">
+    <h5 style="margin-bottom: 1.5rem; font-weight: 600;">基本信息</h5>
+    <div class="row">
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>客户名称</label>
+          <div class="form-control" style="background: #f9fafb;">{{ customer.name }}</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>联系方式</label>
+          <div class="form-control" style="background: #f9fafb;">{{ customer.phone or '-' }}</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>地区</label>
+          <div class="form-control" style="background: #f9fafb;">{{ customer.region or '-' }}</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>状态</label>
+          <div>
+            <span class="status-badge {{ customer.status }}">
+              {% if customer.status == 'pending' %}待接单
+              {% elif customer.status == 'accepted' %}已接单
+              {% elif customer.status == 'timeout' %}超时
+              {% elif customer.status == 'public_pool' %}公海
+              {% elif customer.status == 'unassigned' %}未分配
+              {% else %}未知状态{% endif %}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>销售代表</label>
+          <div class="form-control" style="background: #f9fafb;">{{ customer.sales.username if customer.sales else '-' }}</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>录入人</label>
+          <div class="form-control" style="background: #f9fafb;">{{ customer.creator.username if customer.creator else '-' }}</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-group">
+          <label>派单时间</label>
+          <div class="form-control" style="background: #f9fafb;">
+            {% if customer.dispatch_time %}
+            {{ (customer.dispatch_time | beijing_time).strftime('%Y-%m-%d %H:%M:%S') }}
+            {% else %}
+            -
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    <div class="col-md-6">
+        <div class="form-group">
+          <label>接单时间</label>
+          <div class="form-control" style="background: #f9fafb;">
+            {% if customer.accepted_time %}
+            {{ (customer.accepted_time | beijing_time).strftime('%Y-%m-%d %H:%M:%S') }}
+            {% else %}
+            -
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% if customer.image_path %}
+      <div class="col-12">
+        <div class="form-group">
+          <label>客户图片</label>
+          <div class="image-preview-container">
+            {% set full_image_url = url_for('static', filename='uploads/' + customer.image_path) %}
+            {% set preview_image_url = url_for('static', filename=image_preview_path) if image_preview_path else full_image_url %}
+            <img
+              src="{{ preview_image_url }}"
+              alt="客户图片"
+              class="previewable-image"
+              data-image-url="{{ preview_image_url }}"
+              style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
+              loading="lazy"
+              decoding="async"
+            >
+          </div>
+          <small style="display: inline-block; margin-top: 0.25rem;">
+            <a href="{{ full_image_url }}" target="_blank" rel="noopener">查看原图</a>
+          </small>
+        </div>
+      </div>
+      {% endif %}
+      {% if customer.invalid_proof_image %}
+      <div class="col-12">
+        <div class="form-group">
+          <label>无效佐证截图</label>
+          <div class="image-preview-container">
+            {% set invalid_full_url = url_for('static', filename='uploads/' + customer.invalid_proof_image) %}
+            {% set invalid_preview_url = url_for('static', filename=invalid_preview_path) if invalid_preview_path else invalid_full_url %}
+            <img
+              src="{{ invalid_preview_url }}"
+              alt="无效佐证截图"
+              class="previewable-image"
+              data-image-url="{{ invalid_preview_url }}"
+              style="max-width: 320px; border-radius: 8px; cursor: zoom-in;"
+              loading="lazy"
+              decoding="async"
+            >
+          </div>
+          <small style="display: inline-block; margin-top: 0.25rem;">
+            <a href="{{ invalid_full_url }}" target="_blank" rel="noopener">查看原图</a>
+          </small>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="form-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+      <h5 style="margin: 0; font-weight: 600;">备注信息</h5>
+      {% if customer.remark %}
+      <small style="color: #6b7280;">共 {{ customer.remark.splitlines()|length }} 条记录</small>
+      {% endif %}
+    </div>
+    {% if customer.remark %}
+    <div style="max-height: 260px; overflow-y: auto; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;">
+      {% for line in customer.remark.splitlines() %}
+      <div style="font-size: 0.95rem; color: #1f2937; line-height: 1.7; {% if not loop.last %}margin-bottom: 0.65rem;{% endif %}">
+        {{ line }}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 1.25rem; border-radius: 12px; background: #f8fafc; border: 1px dashed #d1d5db; color: #6b7280;">
+      暂无备注
+    </div>
+    {% endif %}
+  </div>
+
+  {% if current_user.role == 'sales' and customer.sales_id == current_user.id and customer.status == 'accepted' %}
+  <div class="form-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1.25rem;">
+      <div>
+        <h5 style="margin-bottom: 0.25rem; font-weight: 600;">销售跟进</h5>
+        <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">更新有效性、转化和跟进记录，按钮统一放在底部方便操作。</p>
+      </div>
+    </div>
+    <form method="post" enctype="multipart/form-data">
+      <div class="row gy-4">
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>是否有效</label>
+            <select name="is_valid" class="form-control">
+            <option value="">未填写</option>
+              <option value="true" {% if customer.is_valid is true %}selected{% endif %}>有效</option>
+              <option value="false" {% if customer.is_valid is false %}selected{% endif %}>无效</option>
+          </select>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-group">
+            <label>是否转化</label>
+            <select name="is_converted" class="form-control">
+            <option value="">未填写</option>
+              <option value="true" {% if customer.is_converted is true %}selected{% endif %}>已转化</option>
+              <option value="false" {% if customer.is_converted is false %}selected{% endif %}>未转化</option>
+          </select>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-group">
+            <label>新增备注</label>
+          <textarea
+            name="remark"
+            rows="3"
+            class="form-control"
+              placeholder="输入新的跟进备注，将自动附带时间戳并追加到历史记录顶部。"
+            ></textarea>
+          </div>
+          {% if customer.remark %}
+          <div style="margin-top: 1rem;">
+            <div style="font-weight: 600; margin-bottom: 0.5rem;">历史备注</div>
+            <div style="max-height: 200px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.75rem; background: #f9fafb;">
+              {% for line in customer.remark.splitlines() %}
+              <div style="font-size: 0.9rem; color: #374151; line-height: 1.6; {% if not loop.last %}margin-bottom: 0.35rem;{% endif %}">
+                {{ line }}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+        {% if customer.is_valid is false or customer.invalid_proof_image %}
+        <div class="col-12">
+          <div class="form-group">
+            <label>无效佐证截图</label>
+            <input type="file" name="invalid_proof_image" class="form-control" accept="image/*">
+            {% if customer.invalid_proof_image %}
+            <small style="color: #6b7280; margin-top: 0.5rem; display: block;">
+              当前：<a href="{{ url_for('static', filename='uploads/' + customer.invalid_proof_image) }}" target="_blank">查看图片</a>
+            </small>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+        <button type="submit" class="btn-action primary" style="min-width: 180px;">
+          <i class="bi-save"></i> 保存跟进信息
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  </div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const previewTargets = document.querySelectorAll('.previewable-image');
+  if (!previewTargets.length) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'image-preview-overlay';
+  overlay.innerHTML = `
+    <div class="image-preview-close" data-close-preview>×</div>
+    <img src="" alt="预览图片">
+  `;
+  document.body.appendChild(overlay);
+
+  const overlayImage = overlay.querySelector('img');
+
+  const showPreview = (src) => {
+    overlayImage.src = src;
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  };
+
+  const closePreview = () => {
+    overlay.classList.remove('active');
+    document.body.style.overflow = '';
+  };
+
+  previewTargets.forEach(img => {
+    img.addEventListener('click', () => {
+      const src = img.dataset.imageUrl || img.src;
+      showPreview(src);
+    });
+  });
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay || event.target.hasAttribute('data-close-preview')) {
+      closePreview();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && overlay.classList.contains('active')) {
+      closePreview();
+    }
+  });
+});
+</script>
+{% endblock %}

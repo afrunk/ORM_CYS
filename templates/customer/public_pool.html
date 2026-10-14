@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block title %}公海客户 - 客户管理系统{% endblock %}
+
+{% block page_title %}公海客户{% endblock %}
+
+{% block body %}
+<div class="page-content public-pool-page">
+
+  <!-- 操作按钮（置顶，移动端无需先滚过表格） -->
+  <div class="action-buttons public-pool-actions">
+    <button class="btn-action primary" type="button" onclick="location.href='{{ url_for('customer.customer_create') }}'">
+      <i class="bi-plus"></i> 添加
+    </button>
+  </div>
+
+  <!-- 数据表格 -->
+  <div class="data-table-wrapper public-pool-table-wrap">
+    <table class="data-table public-pool-table">
+      <thead>
+        <tr>
+          <th>图片</th>
+          <th>客户ID</th>
+          <th>姓名</th>
+          <th>联系方式</th>
+          <th>地区</th>
+          <th>备注信息</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in customers %}
+        <tr class="public-pool-row">
+          <td data-label="图片">
+            {% if c.image_path %}
+            {% set thumb_path = thumbnail_map.get(c.id) %}
+            {% set preview_path = preview_map.get(c.id) %}
+            {% set full_image_url = url_for('static', filename='uploads/' + c.image_path) %}
+            {% set thumb_url = url_for('static', filename=thumb_path) if thumb_path else full_image_url %}
+            {% set preview_url = url_for('static', filename=preview_path) if preview_path else full_image_url %}
+            <picture>
+              {% if thumb_path %}
+              <source srcset="{{ thumb_url }}" type="image/webp">
+              {% endif %}
+            <img
+              class="customer-thumbnail"
+                src="{{ thumb_url }}"
+                data-image-url="{{ preview_url }}"
+              alt="客户图片"
+                width="40"
+                height="40"
+                style="object-fit: cover; border-radius: 4px;"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+          <td data-label="客户ID"><span class="public-pool-cell-value">{{ c.id }}</span></td>
+          <td data-label="姓名"><span class="public-pool-cell-value">{{ c.name }}</span></td>
+          <td data-label="联系方式"><span class="public-pool-cell-value">{{ c.phone or '-' }}</span></td>
+          <td data-label="地区"><span class="public-pool-cell-value">{{ c.region or '-' }}</span></td>
+          <td data-label="备注信息">
+            {% if c.remark %}
+            <details class="public-pool-remark-details">
+              <summary class="public-pool-remark-summary">
+                <span class="public-pool-remark-summary-inner">
+                  <span class="public-pool-remark-label-collapsed">查看备注</span>
+                  <span class="public-pool-remark-label-expanded">收起备注</span>
+                </span>
+                <i class="bi bi-chevron-down public-pool-remark-chevron" aria-hidden="true"></i>
+              </summary>
+              <div class="public-pool-remark-body">{{ c.remark }}</div>
+            </details>
+            {% else %}
+            <span class="public-pool-cell-value">-</span>
+            {% endif %}
+          </td>
+          <td data-label="操作">
+            {% if current_user.role in ['operator', 'super_admin'] %}
+              {% if sales_users %}
+              <form
+                method="post"
+                action="{{ url_for('customer.public_pool_assign', customer_id=c.id) }}"
+                class="public-pool-assign-form"
+              >
+                <select name="sales_id" class="form-control public-pool-sales-select" required>
+                  <option value="">选择在线销售</option>
+                  {% for s in sales_users %}
+                  <option value="{{ s.id }}">
+                    {{ s.username }}{% if s.sales_profile and s.sales_profile.is_available %}（在线）{% else %}（离线）{% endif %}
+                  </option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn-action primary public-pool-submit-btn">接单</button>
+              </form>
+              {% else %}
+              <span style="color: #9ca3af;">暂无在线销售</span>
+              {% endif %}
+            {% elif current_user.role == 'sales' %}
+              {% set is_online = current_user.sales_profile.is_available if current_user.sales_profile else False %}
+              {% if is_online %}
+              <form
+                method="post"
+                action="{{ url_for('customer.public_pool_claim', customer_id=c.id) }}"
+                class="public-pool-claim-form"
+              >
+                <button type="submit" class="btn-action primary public-pool-submit-btn">立即领取</button>
+              </form>
+              {% else %}
+              <span style="color: #9ca3af;">请先在客户列表页切换为“在线”</span>
+              {% endif %}
+            {% else %}
+            <span style="color: #9ca3af;">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr class="public-pool-empty-row">
+          <td colspan="7" class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p class="empty-state-text">暂无数据显示</p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  initPublicPoolImagePreview();
+});
+
+function initPublicPoolImagePreview() {
+  const thumbnails = document.querySelectorAll('.customer-thumbnail');
+  if (!thumbnails.length) return;
+
+  let overlay = document.querySelector('.image-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'image-preview-overlay';
+    overlay.innerHTML = `
+      <div class="image-preview-close" onclick="closeImagePreview()">×</div>
+      <img src="" alt="预览图片">
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay || e.target.classList.contains('image-preview-close')) {
+        closeImagePreview();
+      }
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeImagePreview();
+      }
+    });
+  }
+
+  thumbnails.forEach(img => {
+    img.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const imageUrl = this.getAttribute('data-image-url');
+      if (imageUrl) {
+        showImagePreview(imageUrl);
+      }
+    });
+
+    img.addEventListener('mouseenter', function() {
+      this.style.transform = 'scale(1.2)';
+      this.style.zIndex = '1000';
+      this.style.position = 'relative';
+    });
+
+    img.addEventListener('mouseleave', function() {
+      this.style.transform = 'scale(1)';
+      this.style.zIndex = 'auto';
+      this.style.position = '';
+    });
+  });
+}
+
+function showImagePreview(imageUrl) {
+  const overlay = document.querySelector('.image-preview-overlay');
+  const img = overlay.querySelector('img');
+  img.src = imageUrl;
+  overlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeImagePreview() {
+  const overlay = document.querySelector('.image-preview-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('active');
+  document.body.style.overflow = '';
+}
+</script>
+{% endblock %}
