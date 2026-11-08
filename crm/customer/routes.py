@@ -1634,17 +1634,27 @@ def customer_accept(customer_id: int):
 @customer_bp.route("/public_pool")
 @login_required
 def public_pool():
-    """公海客户列表。"""
+    """公海客户列表。
+
+    可见范围（按角色区分）：
+    - 销售（sales）：只能看到客户地区 == 自己"服务地区"的公海客户，
+      避免出现西北销售领取内蒙客户这类跨区抢单的情况。
+    - 超管 / 运营 / 数据员等其他角色：可以看到全部公海客户，用于统一调配。
+    """
     current = g.current_user
     query = Customer.query.filter(Customer.status == "public_pool")
 
-    # 销售只能看到自己服务地区的公海客户；未配置服务地区的销售看不到任何客户
+    # 地区隔离：仅对销售角色生效。
+    # 地区比较使用精确匹配（Customer.region 与 SalesProfile.service_region
+    # 都来自 regions 表的同一批名称，不做模糊匹配，避免"西北"误匹配到其他地区）。
     if current.role == "sales":
         profile = current.sales_profile
         service_region = profile.service_region if profile else None
         if service_region:
             query = query.filter(Customer.region == service_region)
         else:
+            # 没配置服务地区时无法判断该看哪个地区，宁可不显示也不放开全部，
+            # 防止配置遗漏导致跨区可见。db.false() 生成恒假条件，查询结果为空。
             query = query.filter(db.false())
             flash("您还没有配置服务地区，暂时无法查看公海客户，请联系管理员。", "warning")
 
@@ -1827,7 +1837,11 @@ def public_pool_claim(customer_id: int):
         flash("该客户已被其他人领取。", "warning")
         return redirect(url_for("customer.public_pool"))
 
-    # 服务端再次校验地区，禁止跨地区领取（防止绕过页面直接请求）
+    # 地区校验（服务端强制）：公海列表虽然已经按地区过滤，但领取接口是独立的 POST 请求，
+    # 若只靠列表过滤，有人直接构造请求（或页面停留过久后客户被改地区）仍可跨区领取，
+    # 所以这里必须再校验一次。以下两种情况都拒绝：
+    #   1) 销售未配置服务地区；
+    #   2) 客户地区为空或与销售服务地区不一致（客户无地区的由超管/运营人工分配）。
     if not profile.service_region or customer.region != profile.service_region:
         flash("只能领取本服务地区的公海客户。", "danger")
         return redirect(url_for("customer.public_pool"))
