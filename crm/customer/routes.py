@@ -1637,6 +1637,17 @@ def public_pool():
     """公海客户列表。"""
     current = g.current_user
     query = Customer.query.filter(Customer.status == "public_pool")
+
+    # 销售只能看到自己服务地区的公海客户；未配置服务地区的销售看不到任何客户
+    if current.role == "sales":
+        profile = current.sales_profile
+        service_region = profile.service_region if profile else None
+        if service_region:
+            query = query.filter(Customer.region == service_region)
+        else:
+            query = query.filter(db.false())
+            flash("您还没有配置服务地区，暂时无法查看公海客户，请联系管理员。", "warning")
+
     customers = query.order_by(Customer.id.desc()).all()
 
     thumbnail_map = {}
@@ -1814,6 +1825,11 @@ def public_pool_claim(customer_id: int):
 
     if customer.status != "public_pool":
         flash("该客户已被其他人领取。", "warning")
+        return redirect(url_for("customer.public_pool"))
+
+    # 服务端再次校验地区，禁止跨地区领取（防止绕过页面直接请求）
+    if not profile.service_region or customer.region != profile.service_region:
+        flash("只能领取本服务地区的公海客户。", "danger")
         return redirect(url_for("customer.public_pool"))
 
     customer.sales_id = current.id
